@@ -1,0 +1,44 @@
+{
+  "type": "object",
+  "properties": {
+    "explanation": {
+      "type": "string",
+      "description": "사용자 문장을 어떤 조건으로 해석했는지 한국어로 1~3문장 설명. 애매한 표현을 어떤 숫자로 정했는지 반드시 포함"
+    },
+    "unsupported": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "지원하는 조건으로 바꿀 수 없어 무시한 요청 (예: 뉴스, 재무제표, 특정 거래소 비교). 없으면 빈 배열"
+    },
+    "unit": {
+      "type": "string",
+      "enum": ["MIN15", "MIN60", "MIN240", "DAY"],
+      "description": "기준봉. 15분봉 MIN15, 1시간봉 MIN60, 4시간봉 MIN240, 일봉 DAY. 단타/스캘핑은 MIN15, 스윙은 DAY. 언급 없으면 생략"
+    },
+    "minPrice": { "type": "number", "description": "현재가 최소(원)" },
+    "maxPrice": { "type": "number", "description": "현재가 최대(원). 예: '천원 이하 동전주' → 1000" },
+    "minTradeAmountEok": { "type": "number", "description": "24시간 누적 거래대금 최소(억 원 단위). 예: '거래대금 100억 이상' → 100" },
+    "minChangeRate": { "type": "number", "description": "전일 대비 등락률 최소(%). 예: '오늘 5% 이상 오른' → 5" },
+    "maxChangeRate": { "type": "number", "description": "전일 대비 등락률 최대(%). 예: '오늘 떨어진' → 0" },
+    "excludeWarning": { "type": "boolean", "description": "유의 종목 제외" },
+    "maAligned": { "type": "boolean", "description": "이동평균 정배열 MA5 > MA20 > MA60 (상승 추세)" },
+    "priceAboveMa20": { "type": "boolean", "description": "현재가가 20 이동평균선 위" },
+    "goldenCrossWithin": { "type": "integer", "description": "최근 N봉 이내 MA5 가 MA20 을 상향 돌파(골든크로스). 1~50" },
+    "rsiMin": { "type": "number", "description": "RSI(14) 최소. 0~100" },
+    "rsiMax": { "type": "number", "description": "RSI(14) 최대. 0~100. 예: '과매도' → 30" },
+    "macdCrossWithin": { "type": "integer", "description": "최근 N봉 이내 MACD 가 시그널선을 상향 돌파. 1~50" },
+    "bbLowerTouchWithin": { "type": "integer", "description": "최근 N봉 이내 볼린저밴드 하단을 터치했고 지금은 하단 위(반등). 1~50" },
+    "volumeSurgeRatio": { "type": "number", "description": "직전 완성봉 거래량이 이전 20봉 평균의 X배 이상. 예: '거래량 터진' → 3" },
+    "atrPctMin": { "type": "number", "description": "ATR(14)/현재가 변동성 최소(%)" },
+    "atrPctMax": { "type": "number", "description": "ATR(14)/현재가 변동성 최대(%). 예: '변동성 낮은' → 2" },
+    "dropFromHighMin": { "type": "number", "description": "최근 20봉 최고가 대비 하락률 최소(%). 예: '고점에서 10% 이상 빠진' → 10" },
+    "dropFromHighMax": { "type": "number", "description": "최근 20봉 최고가 대비 하락률 최대(%). 예: '고점 근처' → 2" },
+    "sortBy": {
+      "type": "string",
+      "enum": ["VOLUME_SURGE", "TRADE_AMOUNT", "CHANGE_RATE", "RSI_ASC"],
+      "description": "결과 정렬. 거래량 급증 배수 / 거래대금 / 등락률 / RSI 낮은 순"
+    }
+  },
+  "required": ["explanation", "unsupported"],
+  "additionalProperties": false
+}

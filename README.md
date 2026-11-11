@@ -38,6 +38,19 @@ gradle wrapper        # 최초 1회 → gradlew 생성
 - 서버를 켜면 업비트 시세를 모으기 시작한다. **1시간봉은 약 1분 뒤**부터 검색 가능하고, 15분·4시간·일봉은 차례로 준비된다.
 - 수집 현황: http://localhost:8080/api/collector/status
 
+#### 자연어 검색용 Claude API 키 (선택)
+
+키가 없어도 서버는 정상으로 뜨고, 조건 패널로 직접 검색할 수 있다. 문장으로 검색하려면:
+
+1. https://console.anthropic.com 에서 API 키 발급 (결제 수단 등록 필요)
+2. 환경변수 `ANTHROPIC_API_KEY` 설정
+   - IntelliJ: Run → Edit Configurations → `UpbitAgentApplication` → Environment variables 에 `ANTHROPIC_API_KEY=sk-ant-...`
+   - Windows 터미널: `setx ANTHROPIC_API_KEY "sk-ant-..."` 후 터미널·IntelliJ 재시작
+3. 서버 재시작
+
+키는 `application.yml`이나 코드에 직접 쓰지 않는다 (깃허브에 올라가면 바로 도용된다).
+모델은 가장 저렴한 `claude-haiku-5-5`를 쓴다 (`application.yml`의 `anthropic.model`).
+
 ### 2) 프론트엔드
 
 Node 20.19 이상 또는 22.12 이상이 필요하다.
@@ -52,9 +65,26 @@ npm run dev           # → http://localhost:5173
 
 ## 화면 (상단 탭)
 
-- **종목 검색**: 맨 위 조건 패널 → 아래에 조건 통과 종목 최대 10개 + 선택 종목 차트
+- **종목 검색**: 맨 위 자연어 입력 → 조건 패널(해석 결과, 직접 수정 가능) → 아래에 조건 통과 종목 최대 10개 + 선택 종목 차트
 - **실시간 시세**: 기존 `00.upbit-chart` 화면 (코인 목록 + 차트)
 - **에이전트 현황 / 투자 히스토리 / 설정**: 3단계 이후 구현 예정
+
+## 자연어 검색
+
+```
+"1시간봉에서 거래대금 100억 이상, 과매도였다가 볼린저 하단 찍고 반등하는 코인"
+   ↓ POST /api/screener/parse  (Claude API, 구조화된 출력으로 JSON 스키마 보장)
+{ unit: MIN60, minTradeAmount: 100억, rsiMax: 30, bbLowerTouchWithin: 3 } + 해석 설명
+   ↓ 화면이 조건 패널에 채워서 보여줌 (사람이 확인·수정)
+   ↓ POST /api/screener
+결과 최대 10개
+```
+
+- LLM 은 **문장을 조건으로 바꾸는 일만** 한다. 실제 종목 선별은 서버의 규칙 기반 엔진이 하므로 결과가 재현 가능하다.
+- 애매한 표현("과매도", "거래량 터진", "눌림목")을 어떤 숫자로 정했는지 설명과 함께 돌려준다.
+- 지원하지 않는 요청(뉴스, 재무, 특정 코인 지정 등)은 무시하고 "반영하지 못한 요청"으로 알려준다.
+- LLM 이 범위를 벗어난 값(RSI 150 등)을 주면 `NlConditionMapper`가 바로잡고 화면에 알려준다.
+- 프롬프트와 스키마는 `backend/src/main/resources/nl/` 에 있어 코드 수정 없이 다듬을 수 있다.
 
 ## 조건 검색
 
@@ -72,8 +102,10 @@ npm run dev           # → http://localhost:5173
 ### API
 
 ```
-POST /api/screener          조건 검색 (요청 예시는 아래)
-GET  /api/collector/status  수집 현황
+POST /api/screener              조건 검색 (요청 예시는 아래)
+POST /api/screener/parse        자연어 → 조건 변환 { "text": "..." }
+GET  /api/screener/parse/status 자연어 검색 사용 가능 여부 (API 키 설정 여부)
+GET  /api/collector/status      수집 현황
 ```
 
 ```json
