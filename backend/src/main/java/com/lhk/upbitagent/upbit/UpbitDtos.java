@@ -52,11 +52,12 @@ public final class UpbitDtos {
             @JsonProperty("high_price") double highPrice,
             @JsonProperty("low_price") double lowPrice,
             @JsonProperty("trade_price") double tradePrice,
-            @JsonProperty("candle_acc_trade_volume") double candleAccTradeVolume
+            @JsonProperty("candle_acc_trade_volume") double candleAccTradeVolume,
+            @JsonProperty("candle_acc_trade_price") double candleAccTradePrice
     ) {
         public Candle toCandle() {
             long time = LocalDateTime.parse(candleDateTimeUtc).toInstant(ZoneOffset.UTC).toEpochMilli();
-            return new Candle(time, openingPrice, highPrice, lowPrice, tradePrice, candleAccTradeVolume);
+            return new Candle(time, openingPrice, highPrice, lowPrice, tradePrice, candleAccTradeVolume, candleAccTradePrice);
         }
     }
 }

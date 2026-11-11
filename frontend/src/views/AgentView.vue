@@ -124,6 +124,7 @@
             <span class="mode">{{ s.mode === 'PAPER' ? '모의매매' : '실매매' }}</span>
           </div>
           <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-light" :disabled="busy" @click="btStrategy = s">백테스트</button>
             <button v-if="s.enabled" class="btn btn-sm btn-outline-warning" :disabled="busy" @click="toggle(s)">정지</button>
             <button v-else class="btn btn-sm btn-outline-success" :disabled="busy" @click="toggle(s)">시작</button>
             <button class="btn btn-sm btn-outline-danger" :disabled="busy" @click="remove(s)">삭제</button>
@@ -140,12 +141,14 @@
       </div>
     </div>
 
+    <BacktestModal v-if="btStrategy" :strategy="btStrategy" @close="btStrategy = null" />
   </div>
 </template>
 
 <script setup>
 import { ref, onActivated, onDeactivated, onBeforeUnmount } from 'vue';
 import PnlText from '../components/PnlText.vue';
+import BacktestModal from '../components/BacktestModal.vue';
 import {
   agentSummary, listPositions, agentLogs, listStrategies,
   startStrategy, stopStrategy, deleteStrategy, closeTrade, runAgentNow
@@ -166,6 +169,7 @@ const error = ref('');
 const busy = ref(false);
 const updatedAt = ref(Date.now());
 const now = ref(Date.now());
+const btStrategy = ref(null);
 
 let timer = null;
 

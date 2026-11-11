@@ -40,4 +40,10 @@ export const agentSummary = () => backend.get('/agent/summary').then(data);
 export const agentLogs = (limit = 50) => backend.get('/agent/logs', { params: { limit } }).then(data);
 export const runAgentNow = () => backend.post('/agent/run').then(data);
 
+// ---------- 백테스트 ----------
+// 저장 전 전략(설정 창 값)으로
+export const backtest = (req) => backend.post('/backtest', req, { timeout: 60000 }).then(data);
+// 저장된 전략으로
+export const backtestSaved = (id) => backend.post(`/strategies/${id}/backtest`, null, { timeout: 60000 }).then(data);
+
 export default backend;

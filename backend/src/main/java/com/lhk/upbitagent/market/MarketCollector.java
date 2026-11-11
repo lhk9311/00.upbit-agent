@@ -73,7 +73,16 @@ public class MarketCollector {
 
         long started = System.currentTimeMillis();
         int ok = 0;
-        for (UpbitMarket m : store.markets()) {
+        int done = 0;
+        List<UpbitMarket> markets = store.markets();
+        int total = markets.size();
+        log.info("{} 캔들 수집 시작 ({}개 종목, 약 {}초 소요)", unit.label(), total, total * (requestGapMs + 50) / 1000);
+        for (UpbitMarket m : markets) {
+            store.updateProgress(unit, done, total);
+            if (done > 0 && done % 100 == 0) {
+                log.info("{} 캔들 수집 중 {}/{}", unit.label(), done, total);
+            }
+            done++;
             try {
                 List<Candle> candles = upbit.candles(unit, m.market(), candleCount);
                 store.updateCandles(unit, m.market(), candles);
@@ -86,9 +95,10 @@ public class MarketCollector {
             }
             sleep(requestGapMs);
         }
+        store.updateProgress(null, 0, 0);
         store.markCandlesUpdated(unit);
-        log.info("{} 캔들 수집 완료: {}/{}개, {}ms",
-                unit.label(), ok, store.markets().size(), System.currentTimeMillis() - started);
+        log.info("{} 캔들 수집 완료: {}/{}개, {}초",
+                unit.label(), ok, total, (System.currentTimeMillis() - started) / 1000);
     }
 
     private static void sleep(long ms) {

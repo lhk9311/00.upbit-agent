@@ -67,9 +67,21 @@
 
       <div v-if="error" class="alert alert-warning py-2 mt-3 mb-0">{{ error }}</div>
 
+      <!-- 백테스트 결과 (설정을 바꾸면 다시 돌려야 하므로 바뀐 경우 표시) -->
+      <div v-if="btResult" class="bt-box">
+        <div class="section-title">
+          백테스트 결과
+          <small v-if="btStale" class="stale">· 설정이 바뀌었어요. 다시 돌려보세요</small>
+        </div>
+        <BacktestResult :result="btResult" />
+      </div>
+
       <div class="actions">
-        <button class="btn btn-outline-secondary" :disabled="saving" @click="$emit('close')">취소</button>
-        <button class="btn btn-primary" :disabled="saving" @click="save">
+        <button class="btn btn-outline-secondary" :disabled="busy" @click="$emit('close')">취소</button>
+        <button class="btn btn-outline-light" :disabled="busy" @click="runBacktest">
+          {{ testing ? '계산 중…' : '백테스트' }}
+        </button>
+        <button class="btn btn-primary" :disabled="busy" @click="save">
           {{ saving ? '저장 중…' : '저장하고 시작' }}
         </button>
       </div>
@@ -79,7 +91,8 @@
 
 <script setup>
 import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue';
-import { createStrategy } from '../api/backendApi';
+import { createStrategy, backtest } from '../api/backendApi';
+import BacktestResult from './BacktestResult.vue';
 import { conditionLabels, formatWon, apiError } from '../utils/format';
 
 const props = defineProps({
@@ -101,30 +114,52 @@ const form = reactive({
 });
 
 const saving = ref(false);
+const testing = ref(false);
+const busy = computed(() => saving.value || testing.value);
 const error = ref('');
+
+const btResult = ref(null);
+let btFormJson = '';
+const btStale = computed(() => btResult.value && JSON.stringify(form) !== btFormJson);
 
 const maxExposure = computed(() => (form.orderKrw || 0) * (form.maxPositions || 0));
 
 // 빈칸('') → null
 const num = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : null);
 
+const toRequest = () => ({
+  name: form.name,
+  condition: props.condition,
+  naturalText: props.naturalText || null,
+  orderKrw: num(form.orderKrw),
+  maxPositions: num(form.maxPositions),
+  takeProfitPct: num(form.takeProfitPct),
+  stopLossPct: num(form.stopLossPct),
+  trailingStopPct: num(form.trailingStopPct),
+  maxHoldHours: num(form.maxHoldHours),
+  dailyLossLimitKrw: num(form.dailyLossLimitKrw),
+  enabled: true
+});
+
+// 저장하기 전에 같은 설정으로 과거 데이터에서 돌려보기
+const runBacktest = async () => {
+  testing.value = true;
+  error.value = '';
+  try {
+    btResult.value = await backtest(toRequest());
+    btFormJson = JSON.stringify(form);
+  } catch (e) {
+    error.value = apiError(e, '백테스트 실패');
+  } finally {
+    testing.value = false;
+  }
+};
+
 const save = async () => {
   saving.value = true;
   error.value = '';
   try {
-    const saved = await createStrategy({
-      name: form.name,
-      condition: props.condition,
-      naturalText: props.naturalText || null,
-      orderKrw: num(form.orderKrw),
-      maxPositions: num(form.maxPositions),
-      takeProfitPct: num(form.takeProfitPct),
-      stopLossPct: num(form.stopLossPct),
-      trailingStopPct: num(form.trailingStopPct),
-      maxHoldHours: num(form.maxHoldHours),
-      dailyLossLimitKrw: num(form.dailyLossLimitKrw),
-      enabled: true
-    });
+    const saved = await createStrategy(toRequest());
     emit('saved', saved);
   } catch (e) {
     error.value = apiError(e, '저장 실패');
@@ -135,7 +170,7 @@ const save = async () => {
 
 // ESC 로 닫기
 const onKey = (e) => {
-  if (e.key === 'Escape' && !saving.value) emit('close');
+  if (e.key === 'Escape' && !busy.value) emit('close');
 };
 onMounted(() => window.addEventListener('keydown', onKey));
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
@@ -160,7 +195,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   border-radius: 12px;
   padding: 22px 24px;
   width: 100%;
-  max-width: 560px;
+  max-width: 760px;
   max-height: 90vh;
   overflow-y: auto;
 }
@@ -231,6 +266,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 .calc {
   padding: 6px 0;
   font-variant-numeric: tabular-nums;
+}
+
+.bt-box {
+  margin-top: 16px;
+  border-top: 1px solid #30363d;
+  padding-top: 12px;
+}
+
+.stale {
+  color: #f0b429;
 }
 
 .actions {

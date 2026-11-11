@@ -41,7 +41,7 @@ class ScreenerEngineTest {
         double p = start;
         for (int i = 0; i < 100; i++) {
             double next = p * (1 + step);
-            list.add(new Candle(i * 3_600_000L, p, Math.max(p, next) * 1.001, Math.min(p, next) * 0.999, next, 100));
+            list.add(new Candle(i * 3_600_000L, p, Math.max(p, next) * 1.001, Math.min(p, next) * 0.999, next, 100, 100 * next));
             p = next;
         }
         return list;
@@ -117,7 +117,7 @@ class ScreenerEngineTest {
         List<Candle> surge = new ArrayList<>(trend(100, 0.001));
         // 직전 완성봉(뒤에서 두 번째) 거래량을 평균의 5배로
         Candle c98 = surge.get(98);
-        surge.set(98, new Candle(c98.time(), c98.open(), c98.high(), c98.low(), c98.close(), 500));
+        surge.set(98, new Candle(c98.time(), c98.open(), c98.high(), c98.low(), c98.close(), 500, 500 * c98.close()));
 
         List<MarketSnapshot> u = List.of(
                 snap("KRW-FLAT", 5e10, false, trend(100, 0.001)),

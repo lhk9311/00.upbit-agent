@@ -27,6 +27,11 @@ public class MarketDataStore {
     private final Map<CandleUnit, Long> candleUpdatedAt = new ConcurrentHashMap<>();
     private volatile Long tickerUpdatedAt;
 
+    /** 지금 수집 중인 기준봉과 진행 상황 (수집 중이 아니면 null) */
+    private volatile CandleUnit collectingUnit;
+    private volatile int collectingDone;
+    private volatile int collectingTotal;
+
     public MarketDataStore() {
         for (CandleUnit unit : CandleUnit.values()) {
             candles.put(unit, new ConcurrentHashMap<>());
@@ -50,6 +55,17 @@ public class MarketDataStore {
 
     public void updateCandles(CandleUnit unit, String market, List<Candle> list) {
         candles.get(unit).put(market, List.copyOf(list));
+    }
+
+    public void updateProgress(CandleUnit unit, int done, int total) {
+        this.collectingUnit = unit;
+        this.collectingDone = done;
+        this.collectingTotal = total;
+    }
+
+    /** 이 기준봉의 캔들 전체 (백테스트용) */
+    public Map<String, List<Candle>> candles(CandleUnit unit) {
+        return Map.copyOf(candles.get(unit));
     }
 
     public void markCandlesUpdated(CandleUnit unit) {
@@ -108,6 +124,9 @@ public class MarketDataStore {
         Map<String, Object> s = new LinkedHashMap<>();
         s.put("marketCount", markets.size());
         s.put("tickerUpdatedAt", tickerUpdatedAt);
+        CandleUnit cu = collectingUnit;
+        s.put("collecting", cu == null ? null
+                : Map.of("unit", cu.name(), "label", cu.label(), "done", collectingDone, "total", collectingTotal));
         Map<String, Object> units = new LinkedHashMap<>();
         for (CandleUnit unit : CandleUnit.values()) {
             Map<String, Object> u = new LinkedHashMap<>();
