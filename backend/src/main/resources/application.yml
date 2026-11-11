@@ -7,8 +7,20 @@ spring:
   task:
     scheduling:
       pool:
-        # 현재가 갱신과 캔들 수집이 서로 막지 않도록 2개
-        size: 2
+        # 현재가 갱신 / 캔들 수집 / 에이전트가 서로 막지 않도록 3개
+        size: 3
+
+  # 개발용 H2 파일 DB → backend/data/upbit-agent.mv.db 에 저장 (서버를 꺼도 유지)
+  datasource:
+    url: jdbc:h2:file:./data/upbit-agent;MODE=MySQL;AUTO_SERVER=TRUE
+    username: sa
+    password:
+  sql:
+    init:
+      mode: always   # 시작할 때 schema.sql 실행 (CREATE TABLE IF NOT EXISTS)
+  h2:
+    console:
+      enabled: true  # http://localhost:8080/h2-console (JDBC URL 은 위 url 그대로)
 
 collector:
   # 캔들 요청 사이 간격(ms). 업비트 시세 API 초당 요청 제한을 넘지 않게 유지
@@ -17,6 +29,16 @@ collector:
   candle-delay-ms: 5000
   # 종목당 가져올 캔들 수 (업비트 최대 200)
   candle-count: 200
+
+agent:
+  # 에이전트 판단 주기(ms)
+  cycle-ms: 60000
+  # 업비트 KRW 마켓 수수료 0.05%
+  fee-rate: 0.0005
+  # 모의 체결가를 불리하게 조정 (매수 +0.1%, 매도 -0.1%) — 실제보다 낙관적인 결과를 막기 위함
+  paper-slippage: 0.001
+  # 매도한 종목은 이 시간(분) 동안 다시 사지 않음 (같은 종목 반복 매매 방지)
+  reentry-cooldown-minutes: 60
 
 # 자연어 검색 (Claude API)
 anthropic:

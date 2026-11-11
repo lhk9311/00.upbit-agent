@@ -1,0 +1,53 @@
+-- H2(MySQL 모드)와 MariaDB 에서 모두 동작하도록 작성
+-- 시각은 epoch 밀리초(BIGINT), 퍼센트는 % 단위
+
+CREATE TABLE IF NOT EXISTS strategy (
+    id                   BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name                 VARCHAR(100)  NOT NULL,
+    condition_json       VARCHAR(4000) NOT NULL,   -- 조건 검색 조건 (ScreenerCondition JSON)
+    natural_text         VARCHAR(500),             -- 자연어로 입력한 원문
+    order_krw            DOUBLE        NOT NULL,   -- 1회 매수 금액
+    max_positions        INT           NOT NULL,
+    take_profit_pct      DOUBLE,
+    stop_loss_pct        DOUBLE,
+    trailing_stop_pct    DOUBLE,
+    max_hold_hours       INT,
+    daily_loss_limit_krw DOUBLE,
+    mode                 VARCHAR(10)   NOT NULL,   -- PAPER / LIVE
+    enabled              BOOLEAN       NOT NULL,
+    deleted              BOOLEAN       NOT NULL DEFAULT FALSE,
+    created_at           BIGINT        NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trade (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    strategy_id   BIGINT       NOT NULL,
+    market        VARCHAR(20)  NOT NULL,
+    korean_name   VARCHAR(100),
+    status        VARCHAR(10)  NOT NULL,   -- OPEN / CLOSED
+    mode          VARCHAR(10)  NOT NULL,
+    buy_price     DOUBLE       NOT NULL,
+    quantity      DOUBLE       NOT NULL,
+    buy_amount    DOUBLE       NOT NULL,
+    buy_fee       DOUBLE       NOT NULL,
+    buy_at        BIGINT       NOT NULL,
+    highest_price DOUBLE       NOT NULL,
+    sell_price    DOUBLE,
+    sell_amount   DOUBLE,
+    sell_fee      DOUBLE,
+    sell_at       BIGINT,
+    sell_reason   VARCHAR(100),
+    pnl           DOUBLE,
+    pnl_rate      DOUBLE
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_status ON trade (status);
+CREATE INDEX IF NOT EXISTS idx_trade_strategy ON trade (strategy_id);
+
+CREATE TABLE IF NOT EXISTS agent_log (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    created_at  BIGINT        NOT NULL,
+    strategy_id BIGINT,
+    level       VARCHAR(10)   NOT NULL,   -- INFO / BUY / SELL / WARN
+    message     VARCHAR(500)  NOT NULL
+);

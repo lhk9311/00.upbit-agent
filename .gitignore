@@ -6,6 +6,7 @@ dist/
 backend/build/
 backend/.gradle/
 backend/out/
+backend/data/
 
 # IDE
 .idea/

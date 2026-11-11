@@ -71,12 +71,14 @@
       </table>
     </div>
 
+    <!-- 검색을 한 번 해야 어떤 조건인지 확인한 뒤 시작할 수 있다 -->
     <button
       class="btn btn-outline-light btn-sm w-100 mt-3"
-      disabled
-      title="3단계(모의매매 에이전트)에서 연결 예정"
+      :disabled="!result"
+      :title="result ? '' : '먼저 검색해서 조건을 확인해주세요'"
+      @click="$emit('start-agent')"
     >
-      이 조건으로 에이전트 시작 (준비 중)
+      이 조건으로 에이전트 시작 (모의매매)
     </button>
 
   </div>
@@ -84,6 +86,7 @@
 
 <script setup>
 import PnlText from './PnlText.vue';
+import { formatPrice, formatEok, formatTime } from '../utils/format';
 
 defineProps({
   result: { type: Object, default: null },
@@ -91,27 +94,10 @@ defineProps({
   selectedMarket: { type: String, default: '' }
 });
 
-defineEmits(['select']);
+defineEmits(['select', 'start-agent']);
 
 const fixed = (v, d) => (v == null ? '—' : v.toFixed(d));
 
-const formatPrice = (v) => {
-  const abs = Math.abs(v);
-  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 4;
-  return v.toLocaleString('ko-KR', { maximumFractionDigits: digits });
-};
-
-const formatEok = (won) => {
-  const eok = won / 100_000_000;
-  if (eok >= 10000) return (eok / 10000).toFixed(1) + '조';
-  return Math.round(eok).toLocaleString('ko-KR') + '억';
-};
-
-const formatTime = (ms) => {
-  const d = new Date(ms);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-};
 </script>
 
 <style scoped>

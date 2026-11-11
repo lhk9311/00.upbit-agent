@@ -19,6 +19,7 @@
           :error="error"
           :selectedMarket="selected?.market"
           @select="selected = $event"
+          @start-agent="openStrategy"
         />
       </div>
 
@@ -26,6 +27,15 @@
         <ChartPanel :market="selected?.market" :title="selected?.koreanName" />
       </div>
     </div>
+
+    <!-- 전략 저장·시작 -->
+    <StrategyModal
+      v-if="strategyDraft"
+      :condition="strategyDraft.condition"
+      :naturalText="strategyDraft.naturalText"
+      @close="strategyDraft = null"
+      @saved="onStrategySaved"
+    />
   </div>
 </template>
 
@@ -36,6 +46,8 @@ import NaturalInput from '../components/NaturalInput.vue';
 import ConditionPanel, { defaultCondition } from '../components/ConditionPanel.vue';
 import ResultList from '../components/ResultList.vue';
 import ChartPanel from '../components/ChartPanel.vue';
+import StrategyModal from '../components/StrategyModal.vue';
+import { useRouter } from 'vue-router';
 import { screen, parseCondition, parseStatus } from '../api/backendApi';
 
 const condition = ref(defaultCondition());
@@ -43,6 +55,15 @@ const result = ref(null);
 const error = ref('');
 const loading = ref(false);
 const selected = ref(null);
+const router = useRouter();
+
+// 마지막으로 검색에 쓴 조건 (에이전트는 화면에 보이는 결과와 같은 조건으로 시작해야 한다)
+const lastSearched = ref(null);
+const strategyDraft = ref(null);
+
+// 자연어로 만든 조건을 패널에서 고치지 않았을 때만 원문을 함께 저장
+let nlText = '';
+let nlRequestJson = '';
 
 // 자연어 검색 상태
 const nlEnabled = ref(true);
@@ -128,6 +149,8 @@ const searchByText = async (text) => {
     const parsed = await parseCondition(text);
     nlParsed.value = parsed;
     condition.value = toForm(parsed.condition);
+    nlText = text;
+    nlRequestJson = JSON.stringify(toRequest(condition.value));
     await search();
   } catch (e) {
     nlParsed.value = null;
@@ -137,12 +160,28 @@ const searchByText = async (text) => {
   }
 };
 
+const openStrategy = () => {
+  if (!lastSearched.value) return;
+  const sameAsNl = nlText && JSON.stringify(lastSearched.value) === nlRequestJson;
+  strategyDraft.value = {
+    condition: lastSearched.value,
+    naturalText: sameAsNl ? nlText : ''
+  };
+};
+
+const onStrategySaved = () => {
+  strategyDraft.value = null;
+  router.push('/agent');
+};
+
 const search = async () => {
   loading.value = true;
   error.value = '';
 
   try {
-    result.value = await screen(toRequest(condition.value));
+    const request = toRequest(condition.value);
+    result.value = await screen(request);
+    lastSearched.value = request;
 
     // 1위 종목 차트를 바로 보여준다 (이전 선택이 결과에 남아 있으면 유지)
     const items = result.value.items;
@@ -151,6 +190,7 @@ const search = async () => {
     }
   } catch (e) {
     result.value = null;
+    lastSearched.value = null;
     error.value = errorMessage(e, '검색 실패');
   } finally {
     loading.value = false;

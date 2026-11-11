@@ -65,6 +65,23 @@ public class MarketDataStore {
         return candleUpdatedAt.get(unit);
     }
 
+    /** 종목별 현재가 (에이전트 매도 판단·평가손익용) */
+    public Map<String, Double> prices() {
+        Map<String, Double> out = new LinkedHashMap<>();
+        tickers.forEach((market, t) -> out.put(market, t.tradePrice()));
+        return out;
+    }
+
+    public Double price(String market) {
+        UpbitTicker t = tickers.get(market);
+        return t == null ? null : t.tradePrice();
+    }
+
+    /** 현재가가 이 시간보다 오래됐으면 매매 판단에 쓰지 않는다 */
+    public boolean pricesFresherThan(long maxAgeMs) {
+        return tickerUpdatedAt != null && System.currentTimeMillis() - tickerUpdatedAt <= maxAgeMs;
+    }
+
     /** 조건 검색용 스냅샷. 현재가가 있는 종목만 포함 */
     public List<MarketSnapshot> snapshots(CandleUnit unit) {
         Map<String, List<Candle>> unitCandles = candles.get(unit);

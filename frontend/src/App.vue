@@ -67,6 +67,10 @@ body {
 #app {
   background-color: #0d1117;
   min-height: 100vh;
+  /* 템플릿 기본(style.css)의 1126px 고정 폭을 풀어 표가 잘리지 않게 */
+  width: 100%;
+  max-width: 1600px;
+  border-inline: none;
 }
 
 .app-container {
