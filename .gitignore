@@ -1,0 +1,20 @@
+# frontend
+node_modules/
+dist/
+
+# backend
+backend/build/
+backend/.gradle/
+backend/out/
+
+# IDE
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+
+# 키·환경변수는 절대 커밋하지 않기
+.env
+*.local
+application-local.yml

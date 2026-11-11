@@ -1,0 +1,19 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: upbit-agent
+  task:
+    scheduling:
+      pool:
+        # 현재가 갱신과 캔들 수집이 서로 막지 않도록 2개
+        size: 2
+
+collector:
+  # 캔들 요청 사이 간격(ms). 업비트 시세 API 초당 요청 제한을 넘지 않게 유지
+  request-gap-ms: 130
+  # 한 기준봉 수집을 끝내고 다음 기준봉 수집까지 쉬는 시간(ms)
+  candle-delay-ms: 5000
+  # 종목당 가져올 캔들 수 (업비트 최대 200)
+  candle-count: 200
