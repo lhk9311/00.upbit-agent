@@ -1,0 +1,1002 @@
+From 871550460c2658888bb5cb7044f2113d7dd86925 Mon Sep 17 00:00:00 2001
+From: lhk9311 <lhk9311@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 15:52:22 +0900
+Subject: [PATCH 1/2] =?UTF-8?q?feat:=20=EC=9E=90=EC=97=B0=EC=96=B4=20?=
+ =?UTF-8?q?=EA=B2=80=EC=83=89=20=EC=A1=B0=EA=B1=B4=20=EC=9E=85=EB=A0=A5=20?=
+ =?UTF-8?q?(Claude=20API)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- POST /api/screener/parse: 문장 → 조건 JSON (구조화된 출력으로 스키마 보장)
+- 프롬프트·스키마를 resources/nl/ 로 분리
+- NlConditionMapper: 범위 벗어난 값 보정, 지원하지 않는 요청 분리 (+ 단위 테스트)
+- 화면: 자연어 입력 → 해석 설명 → 조건 패널에 채움 → 자동 검색
+- API 키 미설정 시 자연어 입력 비활성화, 패널 검색은 그대로 사용 가능
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1jPsn35rbk8vNba5SX2E9
+---
+ README.md                                     |  38 +++-
+ .../upbitagent/nl/ClaudeConditionParser.java  | 155 ++++++++++++++++
+ .../lhk/upbitagent/nl/NlConditionMapper.java  | 157 ++++++++++++++++
+ .../upbitagent/web/ScreenerController.java    |  31 +++-
+ backend/src/main/resources/application.yml    |   7 +
+ .../main/resources/nl/condition-prompt.txt    |  23 +++
+ .../main/resources/nl/condition-schema.json   |  44 +++++
+ .../upbitagent/nl/NlConditionMapperTest.java  |  87 +++++++++
+ frontend/src/api/backendApi.js                |   7 +
+ frontend/src/components/NaturalInput.vue      | 170 ++++++++++++++++++
+ frontend/src/views/ScreenerView.vue           |  81 ++++++++-
+ 11 files changed, 790 insertions(+), 10 deletions(-)
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/nl/ClaudeConditionParser.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/nl/NlConditionMapper.java
+ create mode 100644 backend/src/main/resources/nl/condition-prompt.txt
+ create mode 100644 backend/src/main/resources/nl/condition-schema.json
+ create mode 100644 backend/src/test/java/com/lhk/upbitagent/nl/NlConditionMapperTest.java
+ create mode 100644 frontend/src/components/NaturalInput.vue
+
+diff --git a/README.md b/README.md
+index e1cd203..40ebb50 100644
+--- a/README.md
++++ b/README.md
+@@ -38,6 +38,19 @@ gradle wrapper        # 최초 1회 → gradlew 생성
+ - 서버를 켜면 업비트 시세를 모으기 시작한다. **1시간봉은 약 1분 뒤**부터 검색 가능하고, 15분·4시간·일봉은 차례로 준비된다.
+ - 수집 현황: http://localhost:8080/api/collector/status
+ 
++#### 자연어 검색용 Claude API 키 (선택)
++
++키가 없어도 서버는 정상으로 뜨고, 조건 패널로 직접 검색할 수 있다. 문장으로 검색하려면:
++
++1. https://console.anthropic.com 에서 API 키 발급 (결제 수단 등록 필요)
++2. 환경변수 `ANTHROPIC_API_KEY` 설정
++   - IntelliJ: Run → Edit Configurations → `UpbitAgentApplication` → Environment variables 에 `ANTHROPIC_API_KEY=sk-ant-...`
++   - Windows 터미널: `setx ANTHROPIC_API_KEY "sk-ant-..."` 후 터미널·IntelliJ 재시작
++3. 서버 재시작
++
++키는 `application.yml`이나 코드에 직접 쓰지 않는다 (깃허브에 올라가면 바로 도용된다).
++모델은 가장 저렴한 `claude-haiku-5-5`를 쓴다 (`application.yml`의 `anthropic.model`).
++
+ ### 2) 프론트엔드
+ 
+ Node 20.19 이상 또는 22.12 이상이 필요하다.
+@@ -52,10 +65,27 @@ npm run dev           # → http://localhost:5173
+ 
+ ## 화면 (상단 탭)
+ 
+-- **종목 검색**: 맨 위 조건 패널 → 아래에 조건 통과 종목 최대 10개 + 선택 종목 차트
++- **종목 검색**: 맨 위 자연어 입력 → 조건 패널(해석 결과, 직접 수정 가능) → 아래에 조건 통과 종목 최대 10개 + 선택 종목 차트
+ - **실시간 시세**: 기존 `00.upbit-chart` 화면 (코인 목록 + 차트)
+ - **에이전트 현황 / 투자 히스토리 / 설정**: 3단계 이후 구현 예정
+ 
++## 자연어 검색
++
++```
++"1시간봉에서 거래대금 100억 이상, 과매도였다가 볼린저 하단 찍고 반등하는 코인"
++   ↓ POST /api/screener/parse  (Claude API, 구조화된 출력으로 JSON 스키마 보장)
++{ unit: MIN60, minTradeAmount: 100억, rsiMax: 30, bbLowerTouchWithin: 3 } + 해석 설명
++   ↓ 화면이 조건 패널에 채워서 보여줌 (사람이 확인·수정)
++   ↓ POST /api/screener
++결과 최대 10개
++```
++
++- LLM 은 **문장을 조건으로 바꾸는 일만** 한다. 실제 종목 선별은 서버의 규칙 기반 엔진이 하므로 결과가 재현 가능하다.
++- 애매한 표현("과매도", "거래량 터진", "눌림목")을 어떤 숫자로 정했는지 설명과 함께 돌려준다.
++- 지원하지 않는 요청(뉴스, 재무, 특정 코인 지정 등)은 무시하고 "반영하지 못한 요청"으로 알려준다.
++- LLM 이 범위를 벗어난 값(RSI 150 등)을 주면 `NlConditionMapper`가 바로잡고 화면에 알려준다.
++- 프롬프트와 스키마는 `backend/src/main/resources/nl/` 에 있어 코드 수정 없이 다듬을 수 있다.
++
+ ## 조건 검색
+ 
+ 켜진 조건은 모두 **AND**로 적용되므로 조건을 세밀하게 줄수록 결과가 줄어든다.
+@@ -72,8 +102,10 @@ npm run dev           # → http://localhost:5173
+ ### API
+ 
+ ```
+-POST /api/screener          조건 검색 (요청 예시는 아래)
+-GET  /api/collector/status  수집 현황
++POST /api/screener              조건 검색 (요청 예시는 아래)
++POST /api/screener/parse        자연어 → 조건 변환 { "text": "..." }
++GET  /api/screener/parse/status 자연어 검색 사용 가능 여부 (API 키 설정 여부)
++GET  /api/collector/status      수집 현황
+ ```
+ 
+ ```json
+diff --git a/backend/src/main/java/com/lhk/upbitagent/nl/ClaudeConditionParser.java b/backend/src/main/java/com/lhk/upbitagent/nl/ClaudeConditionParser.java
+new file mode 100644
+index 0000000..ccb8d70
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/nl/ClaudeConditionParser.java
+@@ -0,0 +1,155 @@
++package com.lhk.upbitagent.nl;
++
++import com.fasterxml.jackson.core.type.TypeReference;
++import com.fasterxml.jackson.databind.JsonNode;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.core.io.ClassPathResource;
++import org.springframework.http.MediaType;
++import org.springframework.stereotype.Service;
++import org.springframework.web.client.HttpClientErrorException;
++import org.springframework.web.client.HttpServerErrorException;
++import org.springframework.web.client.ResourceAccessException;
++import org.springframework.web.client.RestClient;
++
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++
++/**
++ * 자연어 검색 조건 → ScreenerCondition 변환 (Claude API, 구조화된 출력 사용).
++ *
++ * 구조화된 출력(output_config.format = json_schema)을 쓰면 응답이 스키마 모양을 따르도록 보장된다.
++ * 프롬프트·스키마는 resources/nl/ 아래 파일로 분리해 코드 수정 없이 다듬을 수 있게 했다.
++ * 참고: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
++ */
++@Service
++public class ClaudeConditionParser {
++
++    private static final Logger log = LoggerFactory.getLogger(ClaudeConditionParser.class);
++
++    public static final int MAX_INPUT_LENGTH = 500;
++
++    private final ObjectMapper objectMapper;
++    private final RestClient rest;
++    private final String apiKey;
++    private final String model;
++    private final String systemPrompt;
++    private final JsonNode schema;
++
++    public ClaudeConditionParser(ObjectMapper objectMapper,
++                                 @Value("${anthropic.api-key:}") String apiKey,
++                                 @Value("${anthropic.model:claude-haiku-5-5}") String model,
++                                 @Value("${anthropic.base-url:https://api.anthropic.com}") String baseUrl) throws IOException {
++        this.objectMapper = objectMapper;
++        this.apiKey = apiKey;
++        this.model = model;
++        this.rest = RestClient.builder()
++                .baseUrl(baseUrl)
++                .defaultHeader("anthropic-version", "2023-06-01")
++                .build();
++        this.systemPrompt = new ClassPathResource("nl/condition-prompt.txt").getContentAsString(StandardCharsets.UTF_8);
++        this.schema = objectMapper.readTree(new ClassPathResource("nl/condition-schema.json").getInputStream());
++    }
++
++    public boolean isConfigured() {
++        return apiKey != null && !apiKey.isBlank();
++    }
++
++    public NlConditionMapper.Result parse(String text) {
++        if (!isConfigured()) {
++            throw new NlParseException(503,
++                    "자연어 검색을 쓰려면 Claude API 키가 필요해요. 환경변수 ANTHROPIC_API_KEY 를 설정하고 서버를 다시 켜주세요.");
++        }
++        if (text == null || text.isBlank()) {
++            throw new NlParseException(400, "검색 조건을 문장으로 입력해주세요.");
++        }
++        if (text.length() > MAX_INPUT_LENGTH) {
++            throw new NlParseException(400, "조건 문장은 " + MAX_INPUT_LENGTH + "자 이내로 입력해주세요.");
++        }
++
++        Map<String, Object> body = new LinkedHashMap<>();
++        body.put("model", model);
++        body.put("max_tokens", 1024);
++        body.put("system", systemPrompt);
++        body.put("messages", List.of(Map.of("role", "user", "content", text.trim())));
++        body.put("output_config", Map.of("format", Map.of("type", "json_schema", "schema", schema)));
++
++        JsonNode response;
++        try {
++            response = rest.post()
++                    .uri("/v1/messages")
++                    .header("x-api-key", apiKey)
++                    .contentType(MediaType.APPLICATION_JSON)
++                    .body(body)
++                    .retrieve()
++                    .body(JsonNode.class);
++        } catch (HttpClientErrorException e) {
++            log.warn("Claude API 오류 {}: {}", e.getStatusCode(), e.getResponseBodyAsString());
++            int code = e.getStatusCode().value();
++            if (code == 401 || code == 403) {
++                throw new NlParseException(503, "Claude API 키가 올바르지 않아요. ANTHROPIC_API_KEY 를 확인해주세요.");
++            }
++            if (code == 429) {
++                throw new NlParseException(429, "Claude API 요청이 많아요. 잠시 후 다시 시도해주세요.");
++            }
++            throw new NlParseException(502, "조건 변환 요청이 거절됐어요 (HTTP " + code + ").");
++        } catch (HttpServerErrorException e) {
++            log.warn("Claude API 서버 오류 {}", e.getStatusCode());
++            throw new NlParseException(502, "Claude API 가 일시적으로 응답하지 않아요. 잠시 후 다시 시도해주세요.");
++        } catch (ResourceAccessException e) {
++            log.warn("Claude API 연결 실패: {}", e.getMessage());
++            throw new NlParseException(502, "Claude API 에 연결하지 못했어요. 네트워크를 확인해주세요.");
++        }
++
++        if (response == null) {
++            throw new NlParseException(502, "Claude API 응답이 비어 있어요.");
++        }
++
++        String stopReason = response.path("stop_reason").asText("");
++        if ("refusal".equals(stopReason)) {
++            throw new NlParseException(422, "이 문장은 조건으로 바꿀 수 없어요. 다른 표현으로 입력해주세요.");
++        }
++        if ("max_tokens".equals(stopReason)) {
++            throw new NlParseException(502, "응답이 중간에 잘렸어요. 문장을 조금 짧게 입력해주세요.");
++        }
++
++        String json = null;
++        for (JsonNode block : response.path("content")) {
++            if ("text".equals(block.path("type").asText())) {
++                json = block.path("text").asText();
++                break;
++            }
++        }
++        if (json == null) {
++            throw new NlParseException(502, "Claude API 응답에서 조건을 찾지 못했어요.");
++        }
++
++        try {
++            Map<String, Object> raw = objectMapper.readValue(json, new TypeReference<>() {
++            });
++            return NlConditionMapper.map(raw);
++        } catch (IOException e) {
++            log.warn("조건 JSON 파싱 실패: {}", json);
++            throw new NlParseException(502, "변환 결과를 읽지 못했어요. 다시 시도해주세요.");
++        }
++    }
++
++    /** 화면에 그대로 보여줄 메시지와 HTTP 상태 */
++    public static class NlParseException extends RuntimeException {
++        private final int status;
++
++        public NlParseException(int status, String message) {
++            super(message);
++            this.status = status;
++        }
++
++        public int status() {
++            return status;
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/nl/NlConditionMapper.java b/backend/src/main/java/com/lhk/upbitagent/nl/NlConditionMapper.java
+new file mode 100644
+index 0000000..0aed992
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/nl/NlConditionMapper.java
+@@ -0,0 +1,157 @@
++package com.lhk.upbitagent.nl;
++
++import com.lhk.upbitagent.domain.CandleUnit;
++import com.lhk.upbitagent.screener.ScreenerCondition;
++
++import java.util.ArrayList;
++import java.util.List;
++import java.util.Map;
++
++/**
++ * LLM 이 돌려준 값(Map)을 ScreenerCondition 으로 바꾸고, 범위를 벗어난 값을 바로잡는다.
++ * 구조화된 출력이 JSON 모양은 보장하지만 숫자 범위(RSI 0~100 등)까지는 보장하지 않으므로
++ * 여기서 한 번 더 검증한다. Spring·Jackson 에 의존하지 않는 순수 Java.
++ */
++public final class NlConditionMapper {
++
++    private static final int MAX_WITHIN = 50;
++
++    private NlConditionMapper() {
++    }
++
++    public record Result(
++            ScreenerCondition condition,
++            String explanation,
++            List<String> unsupported,
++            List<String> adjustments   // 서버가 바로잡은 내용 (화면에 경고로 표시)
++    ) {
++    }
++
++    public static Result map(Map<String, Object> raw) {
++        List<String> adj = new ArrayList<>();
++
++        CandleUnit unit = enumOrNull(CandleUnit.class, raw.get("unit"), "unit", adj);
++        ScreenerCondition.SortBy sortBy = enumOrNull(ScreenerCondition.SortBy.class, raw.get("sortBy"), "sortBy", adj);
++
++        Double minPrice = nonNegative(raw, "minPrice", adj);
++        Double maxPrice = nonNegative(raw, "maxPrice", adj);
++        Double[] price = ordered(minPrice, maxPrice, "가격", adj);
++
++        Double eok = nonNegative(raw, "minTradeAmountEok", adj);
++        Double minTradeAmount = eok == null ? null : eok * 100_000_000;
++
++        Double[] change = ordered(num(raw, "minChangeRate"), num(raw, "maxChangeRate"), "등락률", adj);
++
++        Double[] rsi = ordered(
++                clamp(num(raw, "rsiMin"), 0, 100, "rsiMin", adj),
++                clamp(num(raw, "rsiMax"), 0, 100, "rsiMax", adj), "RSI", adj);
++
++        Double[] atr = ordered(nonNegative(raw, "atrPctMin", adj), nonNegative(raw, "atrPctMax", adj), "ATR", adj);
++
++        Double[] drop = ordered(
++                clamp(num(raw, "dropFromHighMin"), 0, 100, "dropFromHighMin", adj),
++                clamp(num(raw, "dropFromHighMax"), 0, 100, "dropFromHighMax", adj), "고점 대비 하락률", adj);
++
++        Double surge = nonNegative(raw, "volumeSurgeRatio", adj);
++
++        ScreenerCondition condition = new ScreenerCondition(
++                unit,
++                price[0], price[1],
++                minTradeAmount,
++                change[0], change[1],
++                trueOrNull(raw.get("excludeWarning")),
++                trueOrNull(raw.get("maAligned")),
++                trueOrNull(raw.get("priceAboveMa20")),
++                within(raw, "goldenCrossWithin", adj),
++                rsi[0], rsi[1],
++                within(raw, "macdCrossWithin", adj),
++                within(raw, "bbLowerTouchWithin", adj),
++                surge,
++                atr[0], atr[1],
++                drop[0], drop[1],
++                sortBy,
++                ScreenerCondition.MAX_LIMIT);
++
++        String explanation = raw.get("explanation") instanceof String s ? s : "";
++        List<String> unsupported = new ArrayList<>();
++        if (raw.get("unsupported") instanceof List<?> list) {
++            for (Object o : list) {
++                if (o != null && !o.toString().isBlank()) {
++                    unsupported.add(o.toString());
++                }
++            }
++        }
++        return new Result(condition, explanation, unsupported, adj);
++    }
++
++    // ---------- 변환 도우미 ----------
++
++    private static Double num(Map<String, Object> raw, String key) {
++        Object v = raw.get(key);
++        if (v instanceof Number n) {
++            double d = n.doubleValue();
++            return Double.isNaN(d) || Double.isInfinite(d) ? null : d;
++        }
++        return null;
++    }
++
++    private static Double nonNegative(Map<String, Object> raw, String key, List<String> adj) {
++        Double v = num(raw, key);
++        if (v != null && v < 0) {
++            adj.add(key + " 가 음수(" + v + ")라 무시했어요");
++            return null;
++        }
++        return v;
++    }
++
++    private static Double clamp(Double v, double min, double max, String key, List<String> adj) {
++        if (v == null) {
++            return null;
++        }
++        if (v < min || v > max) {
++            double c = Math.max(min, Math.min(max, v));
++            adj.add(key + " 값 " + v + " 을(를) " + c + " 로 조정했어요");
++            return c;
++        }
++        return v;
++    }
++
++    /** 최소 > 최대로 들어오면 서로 바꾼다 */
++    private static Double[] ordered(Double min, Double max, String label, List<String> adj) {
++        if (min != null && max != null && min > max) {
++            adj.add(label + " 최소·최대가 뒤바뀌어 있어 바꿨어요");
++            return new Double[]{max, min};
++        }
++        return new Double[]{min, max};
++    }
++
++    private static Integer within(Map<String, Object> raw, String key, List<String> adj) {
++        Double v = num(raw, key);
++        if (v == null) {
++            return null;
++        }
++        int n = (int) Math.round(v);
++        if (n < 1 || n > MAX_WITHIN) {
++            int c = Math.max(1, Math.min(MAX_WITHIN, n));
++            adj.add(key + " 값 " + n + " 을(를) " + c + " 로 조정했어요");
++            return c;
++        }
++        return n;
++    }
++
++    private static Boolean trueOrNull(Object v) {
++        return Boolean.TRUE.equals(v) ? Boolean.TRUE : null;
++    }
++
++    private static <E extends Enum<E>> E enumOrNull(Class<E> type, Object v, String key, List<String> adj) {
++        if (!(v instanceof String s) || s.isBlank()) {
++            return null;
++        }
++        try {
++            return Enum.valueOf(type, s.trim().toUpperCase());
++        } catch (IllegalArgumentException e) {
++            adj.add(key + " 값 '" + s + "' 은(는) 알 수 없어 무시했어요");
++            return null;
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/web/ScreenerController.java b/backend/src/main/java/com/lhk/upbitagent/web/ScreenerController.java
+index 14309b7..03ceee8 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/web/ScreenerController.java
++++ b/backend/src/main/java/com/lhk/upbitagent/web/ScreenerController.java
+@@ -2,11 +2,15 @@ package com.lhk.upbitagent.web;
+ 
+ import com.lhk.upbitagent.domain.CandleUnit;
+ import com.lhk.upbitagent.market.MarketDataStore;
++import com.lhk.upbitagent.nl.ClaudeConditionParser;
++import com.lhk.upbitagent.nl.ClaudeConditionParser.NlParseException;
++import com.lhk.upbitagent.nl.NlConditionMapper;
+ import com.lhk.upbitagent.screener.ScreenerCondition;
+ import com.lhk.upbitagent.screener.ScreenerEngine;
+ import com.lhk.upbitagent.screener.ScreenerResult;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PostMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+@@ -20,10 +24,12 @@ import java.util.Map;
+ public class ScreenerController {
+ 
+     private final MarketDataStore store;
++    private final ClaudeConditionParser parser;
+     private final ScreenerEngine engine = new ScreenerEngine();
+ 
+-    public ScreenerController(MarketDataStore store) {
++    public ScreenerController(MarketDataStore store, ClaudeConditionParser parser) {
+         this.store = store;
++        this.parser = parser;
+     }
+ 
+     /** 조건 검색. 켜진 조건 모두 통과한 종목 중 정렬 기준 상위 최대 10개 */
+@@ -41,9 +47,32 @@ public class ScreenerController {
+         return ResponseEntity.ok(result);
+     }
+ 
++    /**
++     * 자연어 → 조건 변환. 검색은 하지 않고 조건만 돌려준다.
++     * 화면이 이 조건을 패널에 채워 보여준 뒤 /screener 로 검색한다 (사람이 해석을 확인할 수 있게).
++     */
++    @PostMapping("/screener/parse")
++    public NlConditionMapper.Result parse(@RequestBody ParseRequest request) {
++        return parser.parse(request.text());
++    }
++
++    /** 자연어 검색 사용 가능 여부 (API 키 설정 여부) */
++    @GetMapping("/screener/parse/status")
++    public Map<String, Object> parseStatus() {
++        return Map.of("enabled", parser.isConfigured());
++    }
++
+     /** 수집 현황 */
+     @GetMapping("/collector/status")
+     public Map<String, Object> status() {
+         return store.status();
+     }
++
++    @ExceptionHandler(NlParseException.class)
++    public ResponseEntity<Map<String, String>> handleParse(NlParseException e) {
++        return ResponseEntity.status(e.status()).body(Map.of("message", e.getMessage()));
++    }
++
++    public record ParseRequest(String text) {
++    }
+ }
+diff --git a/backend/src/main/resources/application.yml b/backend/src/main/resources/application.yml
+index 30a20c5..9d57579 100644
+--- a/backend/src/main/resources/application.yml
++++ b/backend/src/main/resources/application.yml
+@@ -17,3 +17,10 @@ collector:
+   candle-delay-ms: 5000
+   # 종목당 가져올 캔들 수 (업비트 최대 200)
+   candle-count: 200
++
++# 자연어 검색 (Claude API)
++anthropic:
++  # 키는 절대 이 파일에 직접 쓰지 말고 환경변수로 넣기 → ANTHROPIC_API_KEY
++  api-key: ${ANTHROPIC_API_KEY:}
++  # 조건 변환은 짧은 작업이라 가장 저렴한 Haiku 로 충분
++  model: claude-haiku-5-5
+diff --git a/backend/src/main/resources/nl/condition-prompt.txt b/backend/src/main/resources/nl/condition-prompt.txt
+new file mode 100644
+index 0000000..1e22997
+--- /dev/null
++++ b/backend/src/main/resources/nl/condition-prompt.txt
+@@ -0,0 +1,23 @@
++너는 업비트 KRW 마켓 코인 조건 검색기의 조건 변환기야.
++사용자가 한국어로 말한 검색 조건을 JSON 스키마의 필드로 바꿔.
++
++규칙
++1. 사용자가 말한 조건만 채워. 말하지 않은 필드는 생략해(생략 = 조건 안 씀).
++2. 애매한 표현은 아래 기준으로 숫자를 정하고, explanation 에 어떤 숫자로 정했는지 꼭 적어.
++   - 과매도: rsiMax 30 / 과매수: rsiMin 70 / 적당한 RSI: 40~60
++   - 거래량 터진·급증: volumeSurgeRatio 3 / 거래량 조금 늘어난: 1.5
++   - 상승 추세·우상향: maAligned true / 20일선 위: priceAboveMa20 true
++   - 골든크로스: goldenCrossWithin 3 (최근 기간 언급이 있으면 그 값)
++   - 반등·바닥 찍고: bbLowerTouchWithin 3
++   - 눌림목: maAligned true, dropFromHighMin 3, dropFromHighMax 10
++   - 급등주: minChangeRate 10 / 많이 오른: minChangeRate 5 / 떨어진: maxChangeRate 0
++   - 대형·거래 많은: minTradeAmountEok 500 / 거래 적은 건 빼고: minTradeAmountEok 50
++   - 안전하게·위험한 거 빼고: excludeWarning true
++   - 변동성 큰: atrPctMin 3 / 변동성 작은: atrPctMax 1.5
++3. 기간 단어로 기준봉을 정해: 단타·스캘핑·분봉 → MIN15, 시간봉·하루 안 → MIN60, 며칠 → MIN240, 스윙·일봉·몇 주 → DAY.
++   언급이 없으면 unit 을 생략해(서버 기본값 1시간봉).
++4. 정렬 언급이 있으면 sortBy 를 정해. "제일 많이 오른 순" → CHANGE_RATE, "거래대금 큰 순" → TRADE_AMOUNT,
++   "과매도 심한 순" → RSI_ASC, "거래량 터진 순" → VOLUME_SURGE.
++5. 지원하지 않는 조건(뉴스, 공시, 재무, 김치프리미엄, 특정 코인 이름 지정, 해외 거래소 비교 등)은 채우지 말고 unsupported 에 원문 표현으로 넣어.
++6. 숫자 단위: 가격은 원, 거래대금은 억 원, 퍼센트는 % 숫자(3% → 3).
++7. 매수·매도 지시(얼마 사줘, 몇 % 익절 등)는 검색 조건이 아니므로 unsupported 에 넣어.
+diff --git a/backend/src/main/resources/nl/condition-schema.json b/backend/src/main/resources/nl/condition-schema.json
+new file mode 100644
+index 0000000..ac78da7
+--- /dev/null
++++ b/backend/src/main/resources/nl/condition-schema.json
+@@ -0,0 +1,44 @@
++{
++  "type": "object",
++  "properties": {
++    "explanation": {
++      "type": "string",
++      "description": "사용자 문장을 어떤 조건으로 해석했는지 한국어로 1~3문장 설명. 애매한 표현을 어떤 숫자로 정했는지 반드시 포함"
++    },
++    "unsupported": {
++      "type": "array",
++      "items": { "type": "string" },
++      "description": "지원하는 조건으로 바꿀 수 없어 무시한 요청 (예: 뉴스, 재무제표, 특정 거래소 비교). 없으면 빈 배열"
++    },
++    "unit": {
++      "type": "string",
++      "enum": ["MIN15", "MIN60", "MIN240", "DAY"],
++      "description": "기준봉. 15분봉 MIN15, 1시간봉 MIN60, 4시간봉 MIN240, 일봉 DAY. 단타/스캘핑은 MIN15, 스윙은 DAY. 언급 없으면 생략"
++    },
++    "minPrice": { "type": "number", "description": "현재가 최소(원)" },
++    "maxPrice": { "type": "number", "description": "현재가 최대(원). 예: '천원 이하 동전주' → 1000" },
++    "minTradeAmountEok": { "type": "number", "description": "24시간 누적 거래대금 최소(억 원 단위). 예: '거래대금 100억 이상' → 100" },
++    "minChangeRate": { "type": "number", "description": "전일 대비 등락률 최소(%). 예: '오늘 5% 이상 오른' → 5" },
++    "maxChangeRate": { "type": "number", "description": "전일 대비 등락률 최대(%). 예: '오늘 떨어진' → 0" },
++    "excludeWarning": { "type": "boolean", "description": "유의 종목 제외" },
++    "maAligned": { "type": "boolean", "description": "이동평균 정배열 MA5 > MA20 > MA60 (상승 추세)" },
++    "priceAboveMa20": { "type": "boolean", "description": "현재가가 20 이동평균선 위" },
++    "goldenCrossWithin": { "type": "integer", "description": "최근 N봉 이내 MA5 가 MA20 을 상향 돌파(골든크로스). 1~50" },
++    "rsiMin": { "type": "number", "description": "RSI(14) 최소. 0~100" },
++    "rsiMax": { "type": "number", "description": "RSI(14) 최대. 0~100. 예: '과매도' → 30" },
++    "macdCrossWithin": { "type": "integer", "description": "최근 N봉 이내 MACD 가 시그널선을 상향 돌파. 1~50" },
++    "bbLowerTouchWithin": { "type": "integer", "description": "최근 N봉 이내 볼린저밴드 하단을 터치했고 지금은 하단 위(반등). 1~50" },
++    "volumeSurgeRatio": { "type": "number", "description": "직전 완성봉 거래량이 이전 20봉 평균의 X배 이상. 예: '거래량 터진' → 3" },
++    "atrPctMin": { "type": "number", "description": "ATR(14)/현재가 변동성 최소(%)" },
++    "atrPctMax": { "type": "number", "description": "ATR(14)/현재가 변동성 최대(%). 예: '변동성 낮은' → 2" },
++    "dropFromHighMin": { "type": "number", "description": "최근 20봉 최고가 대비 하락률 최소(%). 예: '고점에서 10% 이상 빠진' → 10" },
++    "dropFromHighMax": { "type": "number", "description": "최근 20봉 최고가 대비 하락률 최대(%). 예: '고점 근처' → 2" },
++    "sortBy": {
++      "type": "string",
++      "enum": ["VOLUME_SURGE", "TRADE_AMOUNT", "CHANGE_RATE", "RSI_ASC"],
++      "description": "결과 정렬. 거래량 급증 배수 / 거래대금 / 등락률 / RSI 낮은 순"
++    }
++  },
++  "required": ["explanation", "unsupported"],
++  "additionalProperties": false
++}
+diff --git a/backend/src/test/java/com/lhk/upbitagent/nl/NlConditionMapperTest.java b/backend/src/test/java/com/lhk/upbitagent/nl/NlConditionMapperTest.java
+new file mode 100644
+index 0000000..ea45168
+--- /dev/null
++++ b/backend/src/test/java/com/lhk/upbitagent/nl/NlConditionMapperTest.java
+@@ -0,0 +1,87 @@
++package com.lhk.upbitagent.nl;
++
++import com.lhk.upbitagent.domain.CandleUnit;
++import com.lhk.upbitagent.screener.ScreenerCondition;
++import org.junit.jupiter.api.Test;
++
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class NlConditionMapperTest {
++
++    @Test
++    void 정상_값은_그대로_매핑하고_거래대금은_억을_원으로() {
++        Map<String, Object> raw = new HashMap<>();
++        raw.put("explanation", "1시간봉, 거래대금 100억 이상, 과매도(RSI 30 이하)로 해석했어요");
++        raw.put("unsupported", List.of());
++        raw.put("unit", "MIN60");
++        raw.put("minTradeAmountEok", 100);
++        raw.put("rsiMax", 30);
++        raw.put("bbLowerTouchWithin", 3);
++        raw.put("excludeWarning", true);
++        raw.put("sortBy", "RSI_ASC");
++
++        NlConditionMapper.Result r = NlConditionMapper.map(raw);
++        ScreenerCondition c = r.condition();
++
++        assertEquals(CandleUnit.MIN60, c.unit());
++        assertEquals(10_000_000_000.0, c.minTradeAmount(), 1e-6);
++        assertEquals(30.0, c.rsiMax(), 1e-9);
++        assertNull(c.rsiMin());
++        assertEquals(3, c.bbLowerTouchWithin().intValue());
++        assertEquals(Boolean.TRUE, c.excludeWarning());
++        assertEquals(ScreenerCondition.SortBy.RSI_ASC, c.sortBy());
++        assertEquals(10, c.limit().intValue());
++        assertTrue(r.adjustments().isEmpty());
++    }
++
++    @Test
++    void 말하지_않은_조건은_모두_꺼짐() {
++        NlConditionMapper.Result r = NlConditionMapper.map(Map.of("explanation", "x", "unsupported", List.of()));
++        assertTrue(!r.condition().needsIndicators());
++        assertNull(r.condition().unit());
++        assertNull(r.condition().minTradeAmount());
++        assertNull(r.condition().excludeWarning());
++    }
++
++    @Test
++    void 범위를_벗어난_값은_바로잡고_기록() {
++        Map<String, Object> raw = new HashMap<>();
++        raw.put("rsiMin", 150);
++        raw.put("rsiMax", 20);           // 150 → 100 으로 조정 후 min>max 라 서로 바뀜
++        raw.put("goldenCrossWithin", 0);
++        raw.put("volumeSurgeRatio", -2);
++        raw.put("unit", "WEEK");          // 지원하지 않는 기준봉
++
++        NlConditionMapper.Result r = NlConditionMapper.map(raw);
++        assertEquals(20.0, r.condition().rsiMin(), 1e-9);
++        assertEquals(100.0, r.condition().rsiMax(), 1e-9);
++        assertEquals(1, r.condition().goldenCrossWithin().intValue());
++        assertNull(r.condition().volumeSurgeRatio());
++        assertNull(r.condition().unit());
++        assertEquals(5, r.adjustments().size());
++    }
++
++    @Test
++    void false_는_조건을_끈_것으로_처리() {
++        Map<String, Object> raw = new HashMap<>();
++        raw.put("maAligned", false);
++        raw.put("priceAboveMa20", true);
++        NlConditionMapper.Result r = NlConditionMapper.map(raw);
++        assertNull(r.condition().maAligned());
++        assertEquals(Boolean.TRUE, r.condition().priceAboveMa20());
++    }
++
++    @Test
++    void 지원하지_않는_요청은_그대로_전달() {
++        Map<String, Object> raw = new HashMap<>();
++        raw.put("unsupported", List.of("호재 뉴스 있는", " "));
++        NlConditionMapper.Result r = NlConditionMapper.map(raw);
++        assertEquals(List.of("호재 뉴스 있는"), r.unsupported());
++    }
++}
+diff --git a/frontend/src/api/backendApi.js b/frontend/src/api/backendApi.js
+index 866eb74..30a354f 100644
+--- a/frontend/src/api/backendApi.js
++++ b/frontend/src/api/backendApi.js
+@@ -9,6 +9,13 @@ const backend = axios.create({
+ export const screen = (condition) =>
+   backend.post('/screener', condition).then(res => res.data);
+ 
++// 자연어 → 조건 변환 (Claude API 호출이라 시간이 조금 걸릴 수 있음)
++export const parseCondition = (text) =>
++  backend.post('/screener/parse', { text }, { timeout: 30000 }).then(res => res.data);
++
++export const parseStatus = () =>
++  backend.get('/screener/parse/status').then(res => res.data);
++
+ export const collectorStatus = () =>
+   backend.get('/collector/status').then(res => res.data);
+ 
+diff --git a/frontend/src/components/NaturalInput.vue b/frontend/src/components/NaturalInput.vue
+new file mode 100644
+index 0000000..46eb986
+--- /dev/null
++++ b/frontend/src/components/NaturalInput.vue
+@@ -0,0 +1,170 @@
++<template>
++  <div class="nl-card">
++    <label class="nl-label" for="nl-text">어떤 종목을 찾을까요?</label>
++
++    <div class="nl-row">
++      <textarea
++        id="nl-text"
++        v-model="text"
++        rows="2"
++        maxlength="500"
++        :disabled="loading || disabled"
++        :placeholder="disabled
++          ? 'Claude API 키(ANTHROPIC_API_KEY)를 설정하면 문장으로 조건을 입력할 수 있어요. 지금은 아래 패널에서 직접 골라주세요.'
++          : '예) 1시간봉에서 거래대금 100억 이상이고, 과매도였다가 볼린저 하단 찍고 반등하는 코인'"
++        @keydown.enter.exact.prevent="submit"
++      ></textarea>
++
++      <button class="btn btn-primary nl-btn" :disabled="loading || disabled || !text.trim()" @click="submit">
++        {{ loading ? '해석 중…' : '조건으로 검색' }}
++      </button>
++    </div>
++
++    <!-- 예시 문장 -->
++    <div v-if="!disabled" class="examples">
++      <button v-for="ex in EXAMPLES" :key="ex" class="example" :disabled="loading" @click="useExample(ex)">
++        {{ ex }}
++      </button>
++    </div>
++
++    <!-- 해석 결과 -->
++    <div v-if="error" class="alert alert-warning py-2 mt-3 mb-0">{{ error }}</div>
++
++    <div v-else-if="parsed" class="interpretation mt-3">
++      <div><b>이렇게 해석했어요</b> · {{ parsed.explanation || '설명 없음' }}</div>
++      <div v-if="parsed.unsupported.length" class="warn">
++        반영하지 못한 요청: {{ parsed.unsupported.join(', ') }}
++      </div>
++      <div v-if="parsed.adjustments.length" class="warn">
++        자동으로 바로잡은 값: {{ parsed.adjustments.join(' / ') }}
++      </div>
++      <div class="hint">아래 조건 패널에 채워 넣었어요. 해석이 다르면 패널에서 고친 뒤 검색을 다시 누르세요.</div>
++    </div>
++  </div>
++</template>
++
++<script setup>
++import { ref } from 'vue';
++
++defineProps({
++  loading: { type: Boolean, default: false },
++  disabled: { type: Boolean, default: false },
++  error: { type: String, default: '' },
++  parsed: { type: Object, default: null }   // { explanation, unsupported[], adjustments[] }
++});
++
++const emit = defineEmits(['submit']);
++
++const text = ref('');
++
++const EXAMPLES = [
++  '일봉 상승 추세인데 고점에서 살짝 눌린 거래대금 큰 코인',
++  '15분봉에서 거래량 터지면서 골든크로스 난 종목, 유의 종목은 빼고',
++  '오늘 많이 떨어졌는데 RSI 과매도인 코인 과매도 심한 순으로'
++];
++
++const submit = () => {
++  if (text.value.trim()) {
++    emit('submit', text.value.trim());
++  }
++};
++
++const useExample = (ex) => {
++  text.value = ex;
++  submit();
++};
++</script>
++
++<style scoped>
++.nl-card {
++  text-align: left;
++  background: linear-gradient(180deg, #172033 0%, #161b22 100%);
++  border: 1px solid #263248;
++  border-radius: 12px;
++  padding: 16px 20px;
++  margin-bottom: 16px;
++}
++
++.nl-label {
++  display: block;
++  font-weight: 600;
++  margin-bottom: 8px;
++}
++
++.nl-row {
++  display: flex;
++  gap: 10px;
++  align-items: stretch;
++}
++
++textarea {
++  flex: 1;
++  resize: vertical;
++  background: #0d1117;
++  color: white;
++  border: 1px solid #30363d;
++  border-radius: 8px;
++  padding: 10px 12px;
++  font-size: 0.95rem;
++}
++
++textarea:focus {
++  outline: none;
++  border-color: #3b82f6;
++}
++
++textarea:disabled {
++  opacity: 0.7;
++}
++
++.nl-btn {
++  white-space: nowrap;
++  min-width: 120px;
++}
++
++.examples {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 6px;
++  margin-top: 10px;
++}
++
++.example {
++  background: #0d1117;
++  border: 1px solid #30363d;
++  color: #8b949e;
++  border-radius: 999px;
++  padding: 3px 10px;
++  font-size: 0.8rem;
++}
++
++.example:hover:not(:disabled) {
++  color: white;
++  border-color: #3b82f6;
++}
++
++.interpretation {
++  background: #0d1117;
++  border-radius: 8px;
++  padding: 10px 12px;
++  font-size: 0.9rem;
++  color: #c9d1d9;
++}
++
++.interpretation .warn {
++  color: #f0b429;
++  margin-top: 4px;
++}
++
++.interpretation .hint {
++  color: #8b949e;
++  font-size: 0.8rem;
++  margin-top: 6px;
++}
++
++@media (max-width: 600px) {
++  .nl-row {
++    flex-direction: column;
++  }
++}
++</style>
+diff --git a/frontend/src/views/ScreenerView.vue b/frontend/src/views/ScreenerView.vue
+index c8e43ca..e3e424b 100644
+--- a/frontend/src/views/ScreenerView.vue
++++ b/frontend/src/views/ScreenerView.vue
+@@ -1,6 +1,14 @@
+ <template>
+   <div>
+-    <!-- ① 조건 (맨 위) -->
++    <!-- ① 조건 (맨 위): 자연어 입력 → 조건 패널에 채움 → 검색 -->
++    <NaturalInput
++      :loading="nlLoading"
++      :disabled="!nlEnabled"
++      :error="nlError"
++      :parsed="nlParsed"
++      @submit="searchByText"
++    />
++
+     <ConditionPanel v-model="condition" :loading="loading" @search="search" />
+ 
+     <!-- ② 결과 최대 10개 + 차트 -->
+@@ -22,12 +30,13 @@
+ </template>
+ 
+ <script setup>
+-import { ref } from 'vue';
++import { ref, onMounted } from 'vue';
+ 
++import NaturalInput from '../components/NaturalInput.vue';
+ import ConditionPanel, { defaultCondition } from '../components/ConditionPanel.vue';
+ import ResultList from '../components/ResultList.vue';
+ import ChartPanel from '../components/ChartPanel.vue';
+-import { screen } from '../api/backendApi';
++import { screen, parseCondition, parseStatus } from '../api/backendApi';
+ 
+ const condition = ref(defaultCondition());
+ const result = ref(null);
+@@ -35,6 +44,24 @@ const error = ref('');
+ const loading = ref(false);
+ const selected = ref(null);
+ 
++// 자연어 검색 상태
++const nlEnabled = ref(true);
++const nlLoading = ref(false);
++const nlError = ref('');
++const nlParsed = ref(null);
++
++onMounted(async () => {
++  try {
++    nlEnabled.value = (await parseStatus()).enabled;
++  } catch {
++    // 백엔드가 꺼져 있으면 입력은 열어두고, 실제 요청 때 에러를 보여준다
++  }
++});
++
++const errorMessage = (e, fallback) =>
++  e.response?.data?.message ??
++  (e.response ? `${fallback} (HTTP ${e.response.status})` : '백엔드 서버(8080)에 연결할 수 없어요. 서버가 켜져 있는지 확인해주세요.');
++
+ // 화면 입력값 → 백엔드 요청 형식
+ // 빈칸('')은 null(조건 끔)로, 거래대금은 억 → 원으로
+ const toRequest = (c) => {
+@@ -66,6 +93,50 @@ const toRequest = (c) => {
+   };
+ };
+ 
++// 백엔드 조건(ScreenerCondition) → 화면 입력값
++// 문장에서 말하지 않은 조건은 모두 끈 상태로 시작한다. 단, 유의 종목 제외는 안전을 위해 기본으로 켠다.
++const toForm = (c) => ({
++  ...defaultCondition(),
++  unit: c.unit ?? 'MIN60',
++  minPrice: c.minPrice,
++  maxPrice: c.maxPrice,
++  minTradeAmountEok: c.minTradeAmount == null ? null : c.minTradeAmount / 100_000_000,
++  minChangeRate: c.minChangeRate,
++  maxChangeRate: c.maxChangeRate,
++  excludeWarning: true,
++  maAligned: !!c.maAligned,
++  priceAboveMa20: !!c.priceAboveMa20,
++  goldenCrossWithin: c.goldenCrossWithin,
++  rsiMin: c.rsiMin,
++  rsiMax: c.rsiMax,
++  macdCrossWithin: c.macdCrossWithin,
++  bbLowerTouchWithin: c.bbLowerTouchWithin,
++  volumeSurgeRatio: c.volumeSurgeRatio,
++  atrPctMin: c.atrPctMin,
++  atrPctMax: c.atrPctMax,
++  dropFromHighMin: c.dropFromHighMin,
++  dropFromHighMax: c.dropFromHighMax,
++  sortBy: c.sortBy ?? 'VOLUME_SURGE'
++});
++
++// 문장 → 조건 변환 → 패널에 채우고 바로 검색
++const searchByText = async (text) => {
++  nlLoading.value = true;
++  nlError.value = '';
++
++  try {
++    const parsed = await parseCondition(text);
++    nlParsed.value = parsed;
++    condition.value = toForm(parsed.condition);
++    await search();
++  } catch (e) {
++    nlParsed.value = null;
++    nlError.value = errorMessage(e, '조건 변환 실패');
++  } finally {
++    nlLoading.value = false;
++  }
++};
++
+ const search = async () => {
+   loading.value = true;
+   error.value = '';
+@@ -80,9 +151,7 @@ const search = async () => {
+     }
+   } catch (e) {
+     result.value = null;
+-    error.value =
+-      e.response?.data?.message ??
+-      (e.response ? `검색 실패 (HTTP ${e.response.status})` : '백엔드 서버(8080)에 연결할 수 없어요. 서버가 켜져 있는지 확인해주세요.');
++    error.value = errorMessage(e, '검색 실패');
+   } finally {
+     loading.value = false;
+   }
+-- 
+2.43.0
+

@@ -1,0 +1,1381 @@
+From 84c5f822e7f1771a1635cc028bf8350e560f1672 Mon Sep 17 00:00:00 2001
+From: lhk9311 <lhk9311@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 16:34:55 +0900
+Subject: [PATCH] =?UTF-8?q?feat:=20=EB=B0=B1=ED=85=8C=EC=8A=A4=ED=8A=B8,?=
+ =?UTF-8?q?=20=EC=88=98=EC=A7=91=20=EC=A7=84=ED=96=89=20=EB=A1=9C=EA=B7=B8?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- BacktestEngine: 캐시된 캔들로 전략 재현 (봉 안 고가·저가 기준 손절/익절/트레일링, 동시 터치 시 손절,
+  갭 하락 시가 체결, 수수료·슬리피지, 일일 손실 한도, 재진입 대기) + 단위 테스트
+- 결과: 총손익·수익률·승률·최대 낙폭·평균 보유·비트코인 보유 비교·수익곡선·거래 목록
+- API: POST /api/backtest (저장 전), POST /api/strategies/{id}/backtest (저장 후)
+- 화면: 전략 설정 창과 전략 카드에 백테스트 버튼, 결과 패널
+- 캔들에 거래대금(candle_acc_trade_price) 추가
+- 수집기: 시작·100개 단위 진행·완료 로그, status API 에 진행률
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1jPsn35rbk8vNba5SX2E9
+---
+ README.md                                     |  25 +-
+ .../upbitagent/backtest/BacktestEngine.java   | 370 ++++++++++++++++++
+ .../com/lhk/upbitagent/domain/Candle.java     |   4 +-
+ .../com/lhk/upbitagent/domain/CandleUnit.java |  17 +-
+ .../upbitagent/market/MarketCollector.java    |  16 +-
+ .../upbitagent/market/MarketDataStore.java    |  19 +
+ .../com/lhk/upbitagent/upbit/UpbitDtos.java   |   5 +-
+ .../upbitagent/web/BacktestController.java    |  86 ++++
+ .../backtest/BacktestEngineTest.java          | 135 +++++++
+ .../screener/ScreenerEngineTest.java          |   4 +-
+ frontend/src/api/backendApi.js                |   6 +
+ frontend/src/components/BacktestModal.vue     |  92 +++++
+ frontend/src/components/BacktestResult.vue    | 202 ++++++++++
+ frontend/src/components/StrategyModal.vue     |  81 +++-
+ frontend/src/views/AgentView.vue              |   4 +
+ 15 files changed, 1033 insertions(+), 33 deletions(-)
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/backtest/BacktestEngine.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java
+ create mode 100644 backend/src/test/java/com/lhk/upbitagent/backtest/BacktestEngineTest.java
+ create mode 100644 frontend/src/components/BacktestModal.vue
+ create mode 100644 frontend/src/components/BacktestResult.vue
+
+diff --git a/README.md b/README.md
+index 59eee45..d33d938 100644
+--- a/README.md
++++ b/README.md
+@@ -17,7 +17,7 @@ upbit-agent/
+ | 2 | 시세 수집기 + 조건 검색 API + 검색 화면 | ✅ |
+ | 3 | 모의매매 에이전트, 거래 테이블(DB), 투자 히스토리 탭 | ✅ |
+ | 4 | 에이전트 현황 탭 (실시간 평가손익) | ✅ |
+-| 5 | 백테스트 | ⏳ |
++| 5 | 백테스트 | ✅ |
+ | 6 | 실주문 연결 (업비트 키, IP 허용, 한도) | ⏳ |
+ | 7 | 로그인, 배포 | ⏳ |
+ 
+@@ -36,7 +36,8 @@ gradle wrapper        # 최초 1회 → gradlew 생성
+ 
+ - 주소: http://localhost:8080
+ - 서버를 켜면 업비트 시세를 모으기 시작한다. **1시간봉은 약 1분 뒤**부터 검색 가능하고, 15분·4시간·일봉은 차례로 준비된다.
+-- 수집 현황: http://localhost:8080/api/collector/status
++- 수집 현황: http://localhost:8080/api/collector/status (수집 중이면 `collecting`에 진행률)
++- 콘솔에 `1시간봉 캔들 수집 시작 → 수집 중 100/301 → 수집 완료` 로그가 차례로 찍힌다
+ 
+ #### 자연어 검색용 Claude API 키 (선택)
+ 
+@@ -88,6 +89,24 @@ npm run dev           # → http://localhost:5173
+ - 현재가 수신이 1분 넘게 끊기면 매매 판단을 쉬고 활동 기록에 남긴다.
+ - 판단 로직(`AgentEngine`)은 순수 Java라 단위 테스트로 검증한다.
+ 
++## 백테스트
++
++전략을 서버가 이미 모아둔 과거 캔들에 그대로 적용해본다. 업비트를 추가로 호출하지 않아 1초 안에 끝난다.
++
++- 전략 설정 창의 **백테스트** 버튼(저장 전), 에이전트 현황의 전략 카드 **백테스트** 버튼(저장 후)
++- 결과: 총손익·수익률(투입 한도 = 1회 금액 × 최대 보유 수 대비), 거래 수·승률, 최대 낙폭, 평균 보유 시간, 같은 기간 **비트코인 그냥 보유** 수익률, 수익곡선, 거래 목록
++
++계산 규칙 (`BacktestEngine`, 애매하면 불리하게)
++- 봉이 끝난 시점에 조건 검색 → 종가로 매수 (수수료·슬리피지 반영)
++- 다음 봉부터 봉 안의 고가·저가로 매도 판단. 한 봉에서 손절가·익절가 모두 닿으면 **손절**, 갭 하락이면 시가에 손절
++- 일일 손실 한도, 재진입 대기, 최대 보유 수 모두 실제 에이전트와 같게 적용
++- 기간 끝에 남은 포지션은 마지막 종가로 평가
++
++한계
++- 종목당 최대 200봉이라 1시간봉은 약 5일, 일봉은 약 4개월 구간이다 (지표 계산용 앞 69봉 제외)
++- 지금 상장된 종목만 대상 (상장폐지 종목 빠짐 → 실제보다 좋게 나올 수 있음)
++- 24시간 거래대금·전일 대비 등락률은 캔들로 근사, 유의 종목은 현재 기준
++
+ ### DB
+ 
+ 개발용 **H2 파일 DB**를 쓴다. 설치가 필요 없고, `backend/data/`에 저장돼 서버를 꺼도 기록이 남는다 (깃에는 올라가지 않음).
+@@ -145,6 +164,8 @@ GET  /api/trades                 투자 히스토리 (status, strategyId, from,
+ GET  /api/agent/summary          요약 (실현손익, 승률, 평가손익)
+ GET  /api/agent/logs             활동 기록
+ POST /api/agent/run              한 주기 즉시 실행
++POST /api/backtest               저장 전 전략 백테스트 (전략 요청 본문)
++POST /api/strategies/{id}/backtest 저장된 전략 백테스트
+ ```
+ 
+ ```json
+diff --git a/backend/src/main/java/com/lhk/upbitagent/backtest/BacktestEngine.java b/backend/src/main/java/com/lhk/upbitagent/backtest/BacktestEngine.java
+new file mode 100644
+index 0000000..69bd1d1
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/backtest/BacktestEngine.java
+@@ -0,0 +1,370 @@
++package com.lhk.upbitagent.backtest;
++
++import com.lhk.upbitagent.agent.AgentEngine;
++import com.lhk.upbitagent.agent.Strategy;
++import com.lhk.upbitagent.agent.Trade;
++import com.lhk.upbitagent.domain.Candle;
++import com.lhk.upbitagent.domain.CandleUnit;
++import com.lhk.upbitagent.screener.MarketSnapshot;
++import com.lhk.upbitagent.screener.ScreenerEngine;
++import com.lhk.upbitagent.screener.ScreenerResult;
++
++import java.time.Instant;
++import java.time.LocalDate;
++import java.time.ZoneId;
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.TreeSet;
++
++/**
++ * 백테스트: 과거 캔들을 한 봉씩 넘기며 "그때 이 전략이 돌았다면" 을 재현한다.
++ *
++ * 규칙 (실제 에이전트와 최대한 같게, 애매하면 불리하게)
++ * - 매수: 봉이 끝난 시점에 조건 검색 → 종가로 매수 (슬리피지·수수료 반영)
++ * - 매도: 다음 봉부터 봉 안의 고가·저가로 판단
++ *   · 한 봉에서 손절가와 익절가에 모두 닿으면 손절로 처리 (어느 쪽이 먼저인지 알 수 없으므로 보수적으로)
++ *   · 시가가 이미 손절가 아래로 갭 하락했으면 시가에 매도
++ *   · 트레일링은 직전 봉까지의 최고가 기준
++ *   · 보유시간 초과는 그 봉의 종가에 매도
++ * - 일일 손실 한도(KST 기준 하루), 재진입 대기, 최대 보유 수 모두 적용
++ * - 기간이 끝날 때 남은 포지션은 마지막 종가로 평가해 "기간 종료"로 표시
++ *
++ * Spring 에 의존하지 않는 순수 Java.
++ */
++public class BacktestEngine {
++
++    private static final ZoneId KST = ZoneId.of("Asia/Seoul");
++    private static final long DAY_MS = 24 * 60 * 60 * 1000L;
++    private static final String BENCHMARK = "KRW-BTC";
++
++    private final AgentEngine agent;
++    private final ScreenerEngine screener = new ScreenerEngine();
++    private final long cooldownMs;
++
++    public BacktestEngine(AgentEngine.Config config, long cooldownMs) {
++        this.agent = new AgentEngine(config);
++        this.cooldownMs = cooldownMs;
++    }
++
++    public record BtTrade(String market, String koreanName,
++                          long buyAt, double buyPrice, long sellAt, double sellPrice,
++                          String reason, double pnl, double pnlRate, boolean openAtEnd) {
++    }
++
++    /** 수익곡선 한 점: 그 시점까지 실현손익 + 보유 종목 평가손익 */
++    public record EquityPoint(long time, double pnl) {
++    }
++
++    public record Result(
++            String unit,
++            Long from, Long to,           // 매매를 시뮬레이션한 구간(봉 종료 시각)
++            int bars,
++            int marketCount,
++            int tradeCount,
++            int winCount,
++            Double winRate,               // %
++            double totalPnl,              // 원 (수수료 차감)
++            double capital,               // 1회 금액 × 최대 보유 수
++            Double returnPct,             // totalPnl / capital
++            double maxDrawdown,           // 원
++            Double maxDrawdownPct,        // capital 대비 %
++            Double avgHoldHours,
++            Double benchmarkReturnPct,    // 같은 기간 비트코인 보유 수익률
++            List<BtTrade> trades,
++            List<EquityPoint> equity,
++            List<String> notes
++    ) {
++    }
++
++    public Result run(Strategy s, CandleUnit unit,
++                      Map<String, List<Candle>> candlesByMarket,
++                      Map<String, String> names,
++                      Set<String> warningMarkets) {
++
++        long barMs = unit.millis();
++        int barsPerDay = (int) Math.max(1, DAY_MS / barMs);
++
++        // 종목별 "시각 → 인덱스"
++        Map<String, Map<Long, Integer>> indexOf = new HashMap<>();
++        TreeSet<Long> allTimes = new TreeSet<>();
++        for (Map.Entry<String, List<Candle>> e : candlesByMarket.entrySet()) {
++            Map<Long, Integer> idx = new HashMap<>();
++            List<Candle> list = e.getValue();
++            for (int i = 0; i < list.size(); i++) {
++                idx.put(list.get(i).time(), i);
++                allTimes.add(list.get(i).time());
++            }
++            indexOf.put(e.getKey(), idx);
++        }
++
++        List<Long> times = new ArrayList<>(allTimes);
++        int warmup = ScreenerEngine.MIN_CANDLES - 1; // 지표 계산에 필요한 앞부분은 매매하지 않음
++        List<String> notes = defaultNotes();
++
++        if (times.size() <= warmup + 1) {
++            notes.add(0, "캔들이 부족해요 (" + times.size() + "봉). 지표 계산에 " + ScreenerEngine.MIN_CANDLES
++                    + "봉이 필요해서 매매할 구간이 없어요. 서버가 해당 기준봉을 다 모았는지 확인해주세요.");
++            return new Result(unit.name(), null, null, 0, candlesByMarket.size(), 0, 0, null, 0,
++                    capital(s), null, 0, null, null, null, List.of(), List.of(), notes);
++        }
++
++        List<Trade> open = new ArrayList<>();
++        List<BtTrade> closed = new ArrayList<>();
++        List<EquityPoint> equity = new ArrayList<>();
++        Map<String, Long> lastSoldAt = new HashMap<>();
++        Map<LocalDate, Double> realizedByDay = new HashMap<>();
++        double realized = 0;
++        long seq = 1;
++
++        for (int k = warmup; k < times.size(); k++) {
++            long barStart = times.get(k);
++            long barClose = barStart + barMs;
++
++            // ---------- 1. 매도 (이번 봉의 고가·저가로) ----------
++            List<Trade> stillOpen = new ArrayList<>();
++            for (Trade t : open) {
++                Integer i = indexOf.get(t.market()).get(barStart);
++                if (i == null || barStart < t.buyAt()) {
++                    stillOpen.add(t); // 이번 봉 데이터가 없거나 아직 매수한 봉이면 판단 보류
++                    continue;
++                }
++                Candle c = candlesByMarket.get(t.market()).get(i);
++                Exit exit = exitFor(s, t, c, barClose);
++                if (exit == null) {
++                    // 최고가 갱신 (다음 봉의 트레일링 기준)
++                    stillOpen.add(withHighest(t, Math.max(t.highestPrice(), c.high())));
++                    continue;
++                }
++                Trade done = agent.closeTrade(t, exit.price(), exit.reason(), exit.at());
++                realized += done.pnl();
++                realizedByDay.merge(kstDate(exit.at()), done.pnl(), Double::sum);
++                lastSoldAt.put(t.market(), exit.at());
++                closed.add(toBt(done, false));
++            }
++            open = stillOpen;
++
++            // ---------- 2~3. 매수 ----------
++            double today = realizedByDay.getOrDefault(kstDate(barClose), 0.0);
++            boolean lossLimitHit = s.dailyLossLimitKrw() != null && today <= -s.dailyLossLimitKrw();
++            int slots = s.maxPositions() - open.size();
++
++            if (!lossLimitHit && slots > 0 && s.orderKrw() >= AgentEngine.MIN_ORDER_KRW) {
++                List<MarketSnapshot> snaps = snapshotsAt(barStart, candlesByMarket, indexOf, names,
++                        warningMarkets, barsPerDay);
++                List<ScreenerResult.Item> candidates = screener.evaluate(snaps, s.condition()).items();
++
++                Set<String> held = new HashSet<>();
++                for (Trade t : open) {
++                    held.add(t.market());
++                }
++                for (ScreenerResult.Item item : candidates) {
++                    if (slots <= 0) {
++                        break;
++                    }
++                    Long sold = lastSoldAt.get(item.market());
++                    if (held.contains(item.market()) || (sold != null && barClose - sold < cooldownMs)) {
++                        continue;
++                    }
++                    Trade bought = agent.openTrade(s, new AgentEngine.BuyOrder(item.market(), item.koreanName(),
++                            item.tradePrice()), barClose);
++                    // buyAt 을 "다음 봉 시작"으로 두면 다음 봉부터 매도 판단 (같은 봉 고가·저가로 팔지 않게)
++                    Trade withId = new Trade(seq++, bought.strategyId(), bought.strategyName(), bought.market(),
++                            bought.koreanName(), bought.status(), bought.mode(), bought.buyPrice(), bought.quantity(),
++                            bought.buyAmount(), bought.buyFee(), barClose, bought.highestPrice(),
++                            null, null, null, null, null, null, null);
++                    open.add(withId);
++                    held.add(item.market());
++                    slots--;
++                }
++            }
++
++            // ---------- 수익곡선 ----------
++            double unrealized = 0;
++            for (Trade t : open) {
++                Double close = closeAt(t.market(), barStart, candlesByMarket, indexOf);
++                if (close != null) {
++                    unrealized += agent.closeTrade(t, close, "", barClose).pnl();
++                }
++            }
++            equity.add(new EquityPoint(barClose, realized + unrealized));
++        }
++
++        // ---------- 기간 종료: 남은 포지션은 마지막 종가로 평가 ----------
++        long lastStart = times.get(times.size() - 1);
++        long lastClose = lastStart + barMs;
++        for (Trade t : open) {
++            List<Candle> list = candlesByMarket.get(t.market());
++            Candle last = list.get(list.size() - 1);
++            Trade done = agent.closeTrade(t, last.close(), "기간 종료(평가)", lastClose);
++            realized += done.pnl();
++            closed.add(toBt(done, true));
++        }
++
++        return summarize(s, unit, times.get(warmup) + barMs, lastClose, times.size() - warmup,
++                candlesByMarket, indexOf, closed, equity, realized, notes, times.get(warmup));
++    }
++
++    // ---------- 매도 판단 (봉 하나) ----------
++
++    record Exit(double price, String reason, long at) {
++    }
++
++    Exit exitFor(Strategy s, Trade t, Candle c, long barClose) {
++        double buy = t.buyPrice();
++
++        if (s.stopLossPct() != null) {
++            double stop = buy * (1 - s.stopLossPct() / 100);
++            if (c.low() <= stop) {
++                return new Exit(Math.min(c.open(), stop), "손절", barClose);
++            }
++        }
++        if (s.takeProfitPct() != null) {
++            double take = buy * (1 + s.takeProfitPct() / 100);
++            if (c.high() >= take) {
++                return new Exit(Math.max(c.open(), take), "익절", barClose);
++            }
++        }
++        if (s.trailingStopPct() != null && t.highestPrice() > buy) {
++            double trail = t.highestPrice() * (1 - s.trailingStopPct() / 100);
++            if (c.low() <= trail) {
++                return new Exit(Math.min(c.open(), trail), "트레일링", barClose);
++            }
++        }
++        if (s.maxHoldHours() != null && barClose - t.buyAt() >= s.maxHoldHours() * 3_600_000L) {
++            return new Exit(c.close(), "보유시간 초과", barClose);
++        }
++        return null;
++    }
++
++    // ---------- 과거 시점의 스냅샷 ----------
++
++    /**
++     * barStart 봉이 끝난 시점의 종목 스냅샷.
++     * 24시간 거래대금·전일 대비 등락률은 캔들로 근사한다 (업비트 값과 약간 다를 수 있음).
++     */
++    private List<MarketSnapshot> snapshotsAt(long barStart,
++                                             Map<String, List<Candle>> candlesByMarket,
++                                             Map<String, Map<Long, Integer>> indexOf,
++                                             Map<String, String> names,
++                                             Set<String> warningMarkets,
++                                             int barsPerDay) {
++        List<MarketSnapshot> out = new ArrayList<>();
++        for (Map.Entry<String, List<Candle>> e : candlesByMarket.entrySet()) {
++            Integer i = indexOf.get(e.getKey()).get(barStart);
++            if (i == null) {
++                continue; // 그 시각에 거래가 없던 종목 (신규 상장 전 등)
++            }
++            List<Candle> list = e.getValue();
++            Candle c = list.get(i);
++
++            double amount24h = 0;
++            for (int j = Math.max(0, i - barsPerDay + 1); j <= i; j++) {
++                amount24h += list.get(j).tradeAmount();
++            }
++            int prevIdx = i - barsPerDay;
++            double changeRate = prevIdx >= 0 && list.get(prevIdx).close() > 0
++                    ? (c.close() - list.get(prevIdx).close()) / list.get(prevIdx).close() * 100
++                    : 0;
++
++            out.add(new MarketSnapshot(e.getKey(), names.getOrDefault(e.getKey(), e.getKey()),
++                    warningMarkets.contains(e.getKey()), c.close(), changeRate, amount24h,
++                    list.subList(0, i + 1)));
++        }
++        return out;
++    }
++
++    // ---------- 결과 정리 ----------
++
++    private Result summarize(Strategy s, CandleUnit unit, long from, long to, int bars,
++                             Map<String, List<Candle>> candlesByMarket,
++                             Map<String, Map<Long, Integer>> indexOf,
++                             List<BtTrade> trades, List<EquityPoint> equity, double totalPnl,
++                             List<String> notes, long firstBarStart) {
++        int wins = 0;
++        double holdMs = 0;
++        for (BtTrade t : trades) {
++            if (t.pnl() > 0) wins++;
++            holdMs += t.sellAt() - t.buyAt();
++        }
++
++        // 최대 낙폭: 수익곡선의 고점 대비 가장 크게 떨어진 금액
++        double peak = 0;
++        double mdd = 0;
++        for (EquityPoint p : equity) {
++            peak = Math.max(peak, p.pnl());
++            mdd = Math.max(mdd, peak - p.pnl());
++        }
++
++        double capital = capital(s);
++        Double benchmark = benchmark(candlesByMarket, indexOf, firstBarStart);
++
++        trades.sort((a, b) -> Long.compare(a.buyAt(), b.buyAt()));
++
++        return new Result(unit.name(), from, to, bars, candlesByMarket.size(),
++                trades.size(), wins,
++                trades.isEmpty() ? null : wins * 100.0 / trades.size(),
++                totalPnl, capital,
++                capital > 0 ? totalPnl / capital * 100 : null,
++                mdd,
++                capital > 0 ? mdd / capital * 100 : null,
++                trades.isEmpty() ? null : holdMs / trades.size() / 3_600_000.0,
++                benchmark,
++                trades, equity, notes);
++    }
++
++    /** 같은 구간 동안 비트코인을 그냥 들고 있었다면 (비교용) */
++    private Double benchmark(Map<String, List<Candle>> candlesByMarket,
++                             Map<String, Map<Long, Integer>> indexOf, long firstBarStart) {
++        List<Candle> btc = candlesByMarket.get(BENCHMARK);
++        if (btc == null || btc.isEmpty()) {
++            return null;
++        }
++        Integer i = indexOf.get(BENCHMARK).get(firstBarStart);
++        if (i == null) {
++            return null;
++        }
++        double start = btc.get(i).close();
++        double end = btc.get(btc.size() - 1).close();
++        return start > 0 ? (end - start) / start * 100 : null;
++    }
++
++    private static double capital(Strategy s) {
++        return s.orderKrw() * s.maxPositions();
++    }
++
++    private static Double closeAt(String market, long barStart,
++                                  Map<String, List<Candle>> candlesByMarket,
++                                  Map<String, Map<Long, Integer>> indexOf) {
++        Integer i = indexOf.get(market).get(barStart);
++        return i == null ? null : candlesByMarket.get(market).get(i).close();
++    }
++
++    private static Trade withHighest(Trade t, double highest) {
++        return new Trade(t.id(), t.strategyId(), t.strategyName(), t.market(), t.koreanName(), t.status(), t.mode(),
++                t.buyPrice(), t.quantity(), t.buyAmount(), t.buyFee(), t.buyAt(), highest,
++                null, null, null, null, null, null, null);
++    }
++
++    private static BtTrade toBt(Trade t, boolean openAtEnd) {
++        return new BtTrade(t.market(), t.koreanName(), t.buyAt(), t.buyPrice(), t.sellAt(), t.sellPrice(),
++                t.sellReason(), t.pnl(), t.pnlRate(), openAtEnd);
++    }
++
++    private static LocalDate kstDate(long ms) {
++        return Instant.ofEpochMilli(ms).atZone(KST).toLocalDate();
++    }
++
++    private static List<String> defaultNotes() {
++        List<String> n = new ArrayList<>();
++        n.add("서버가 지금 가진 캔들(종목당 최대 200봉)로 계산해요. 1시간봉이면 약 5일, 일봉이면 약 4개월 구간이에요.");
++        n.add("지금 상장된 종목만 대상이에요. 그사이 상장폐지된 종목은 빠져 있어 결과가 실제보다 좋게 나올 수 있어요.");
++        n.add("24시간 거래대금과 전일 대비 등락률은 캔들로 근사했고, 유의 종목 여부는 현재 기준이에요.");
++        n.add("한 봉 안에서 손절가와 익절가에 모두 닿으면 손절로 처리했어요 (보수적).");
++        n.add("과거 결과가 미래 수익을 보장하지 않아요.");
++        return n;
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/domain/Candle.java b/backend/src/main/java/com/lhk/upbitagent/domain/Candle.java
+index 4299563..c3f2f61 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/domain/Candle.java
++++ b/backend/src/main/java/com/lhk/upbitagent/domain/Candle.java
+@@ -2,6 +2,7 @@ package com.lhk.upbitagent.domain;
+ 
+ /**
+  * 캔들 한 개. time 은 캔들 시작 시각(UTC epoch ms).
++ * volume 은 거래량(코인 개수), tradeAmount 는 거래대금(원).
+  */
+ public record Candle(
+         long time,
+@@ -9,6 +10,7 @@ public record Candle(
+         double high,
+         double low,
+         double close,
+-        double volume
++        double volume,
++        double tradeAmount
+ ) {
+ }
+diff --git a/backend/src/main/java/com/lhk/upbitagent/domain/CandleUnit.java b/backend/src/main/java/com/lhk/upbitagent/domain/CandleUnit.java
+index 6e86290..d906c29 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/domain/CandleUnit.java
++++ b/backend/src/main/java/com/lhk/upbitagent/domain/CandleUnit.java
+@@ -5,17 +5,24 @@ package com.lhk.upbitagent.domain;
+  */
+ public enum CandleUnit {
+ 
+-    MIN15("minutes/15", "15분봉"),
+-    MIN60("minutes/60", "1시간봉"),
+-    MIN240("minutes/240", "4시간봉"),
+-    DAY("days", "일봉");
++    MIN15("minutes/15", "15분봉", 15),
++    MIN60("minutes/60", "1시간봉", 60),
++    MIN240("minutes/240", "4시간봉", 240),
++    DAY("days", "일봉", 1440);
+ 
+     private final String path;
+     private final String label;
++    private final int minutes;
+ 
+-    CandleUnit(String path, String label) {
++    CandleUnit(String path, String label, int minutes) {
+         this.path = path;
+         this.label = label;
++        this.minutes = minutes;
++    }
++
++    /** 봉 하나의 길이(ms) */
++    public long millis() {
++        return minutes * 60_000L;
+     }
+ 
+     public String path() {
+diff --git a/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java b/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java
+index c04580b..e16bc3a 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java
++++ b/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java
+@@ -73,7 +73,16 @@ public class MarketCollector {
+ 
+         long started = System.currentTimeMillis();
+         int ok = 0;
+-        for (UpbitMarket m : store.markets()) {
++        int done = 0;
++        List<UpbitMarket> markets = store.markets();
++        int total = markets.size();
++        log.info("{} 캔들 수집 시작 ({}개 종목, 약 {}초 소요)", unit.label(), total, total * (requestGapMs + 50) / 1000);
++        for (UpbitMarket m : markets) {
++            store.updateProgress(unit, done, total);
++            if (done > 0 && done % 100 == 0) {
++                log.info("{} 캔들 수집 중 {}/{}", unit.label(), done, total);
++            }
++            done++;
+             try {
+                 List<Candle> candles = upbit.candles(unit, m.market(), candleCount);
+                 store.updateCandles(unit, m.market(), candles);
+@@ -86,9 +95,10 @@ public class MarketCollector {
+             }
+             sleep(requestGapMs);
+         }
++        store.updateProgress(null, 0, 0);
+         store.markCandlesUpdated(unit);
+-        log.info("{} 캔들 수집 완료: {}/{}개, {}ms",
+-                unit.label(), ok, store.markets().size(), System.currentTimeMillis() - started);
++        log.info("{} 캔들 수집 완료: {}/{}개, {}초",
++                unit.label(), ok, total, (System.currentTimeMillis() - started) / 1000);
+     }
+ 
+     private static void sleep(long ms) {
+diff --git a/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java b/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java
+index 2f974fa..b9db578 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java
++++ b/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java
+@@ -27,6 +27,11 @@ public class MarketDataStore {
+     private final Map<CandleUnit, Long> candleUpdatedAt = new ConcurrentHashMap<>();
+     private volatile Long tickerUpdatedAt;
+ 
++    /** 지금 수집 중인 기준봉과 진행 상황 (수집 중이 아니면 null) */
++    private volatile CandleUnit collectingUnit;
++    private volatile int collectingDone;
++    private volatile int collectingTotal;
++
+     public MarketDataStore() {
+         for (CandleUnit unit : CandleUnit.values()) {
+             candles.put(unit, new ConcurrentHashMap<>());
+@@ -52,6 +57,17 @@ public class MarketDataStore {
+         candles.get(unit).put(market, List.copyOf(list));
+     }
+ 
++    public void updateProgress(CandleUnit unit, int done, int total) {
++        this.collectingUnit = unit;
++        this.collectingDone = done;
++        this.collectingTotal = total;
++    }
++
++    /** 이 기준봉의 캔들 전체 (백테스트용) */
++    public Map<String, List<Candle>> candles(CandleUnit unit) {
++        return Map.copyOf(candles.get(unit));
++    }
++
+     public void markCandlesUpdated(CandleUnit unit) {
+         candleUpdatedAt.put(unit, System.currentTimeMillis());
+     }
+@@ -108,6 +124,9 @@ public class MarketDataStore {
+         Map<String, Object> s = new LinkedHashMap<>();
+         s.put("marketCount", markets.size());
+         s.put("tickerUpdatedAt", tickerUpdatedAt);
++        CandleUnit cu = collectingUnit;
++        s.put("collecting", cu == null ? null
++                : Map.of("unit", cu.name(), "label", cu.label(), "done", collectingDone, "total", collectingTotal));
+         Map<String, Object> units = new LinkedHashMap<>();
+         for (CandleUnit unit : CandleUnit.values()) {
+             Map<String, Object> u = new LinkedHashMap<>();
+diff --git a/backend/src/main/java/com/lhk/upbitagent/upbit/UpbitDtos.java b/backend/src/main/java/com/lhk/upbitagent/upbit/UpbitDtos.java
+index 14ea924..5b7c106 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/upbit/UpbitDtos.java
++++ b/backend/src/main/java/com/lhk/upbitagent/upbit/UpbitDtos.java
+@@ -52,11 +52,12 @@ public final class UpbitDtos {
+             @JsonProperty("high_price") double highPrice,
+             @JsonProperty("low_price") double lowPrice,
+             @JsonProperty("trade_price") double tradePrice,
+-            @JsonProperty("candle_acc_trade_volume") double candleAccTradeVolume
++            @JsonProperty("candle_acc_trade_volume") double candleAccTradeVolume,
++            @JsonProperty("candle_acc_trade_price") double candleAccTradePrice
+     ) {
+         public Candle toCandle() {
+             long time = LocalDateTime.parse(candleDateTimeUtc).toInstant(ZoneOffset.UTC).toEpochMilli();
+-            return new Candle(time, openingPrice, highPrice, lowPrice, tradePrice, candleAccTradeVolume);
++            return new Candle(time, openingPrice, highPrice, lowPrice, tradePrice, candleAccTradeVolume, candleAccTradePrice);
+         }
+     }
+ }
+diff --git a/backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java b/backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java
+new file mode 100644
+index 0000000..75593e1
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java
+@@ -0,0 +1,86 @@
++package com.lhk.upbitagent.web;
++
++import com.lhk.upbitagent.agent.AgentEngine;
++import com.lhk.upbitagent.agent.Strategy;
++import com.lhk.upbitagent.agent.StrategyRequest;
++import com.lhk.upbitagent.backtest.BacktestEngine;
++import com.lhk.upbitagent.domain.CandleUnit;
++import com.lhk.upbitagent.market.MarketDataStore;
++import com.lhk.upbitagent.store.StrategyRepository;
++import com.lhk.upbitagent.upbit.UpbitDtos.UpbitMarket;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.Map;
++import java.util.Set;
++
++/**
++ * 백테스트. 서버가 이미 모아둔 캔들(메모리 캐시)로 계산하므로 업비트를 추가로 호출하지 않는다.
++ */
++@RestController
++@RequestMapping("/api")
++public class BacktestController {
++
++    private final MarketDataStore market;
++    private final StrategyRepository strategies;
++    private final BacktestEngine engine;
++
++    public BacktestController(MarketDataStore market, StrategyRepository strategies,
++                              @Value("${agent.fee-rate:0.0005}") double feeRate,
++                              @Value("${agent.paper-slippage:0.001}") double slippage,
++                              @Value("${agent.reentry-cooldown-minutes:60}") long cooldownMinutes) {
++        this.market = market;
++        this.strategies = strategies;
++        this.engine = new BacktestEngine(new AgentEngine.Config(feeRate, slippage), cooldownMinutes * 60_000);
++    }
++
++    /** 저장하기 전 전략으로 백테스트 (전략 설정 창에서 사용) */
++    @PostMapping("/backtest")
++    public BacktestEngine.Result backtest(@RequestBody StrategyRequest req) {
++        return run(req.toStrategy(null, System.currentTimeMillis()));
++    }
++
++    /** 저장된 전략으로 백테스트 */
++    @PostMapping("/strategies/{id}/backtest")
++    public BacktestEngine.Result backtestSaved(@PathVariable long id) {
++        Strategy s = strategies.findById(id)
++                .orElseThrow(() -> new IllegalArgumentException("전략을 찾을 수 없어요: " + id));
++        return run(s);
++    }
++
++    private BacktestEngine.Result run(Strategy s) {
++        CandleUnit unit = s.condition().unitOrDefault();
++        if (!market.isReady(unit)) {
++            throw new IllegalStateException(unit.label() + " 데이터를 아직 모으는 중이에요. 잠시 후 다시 시도해주세요.");
++        }
++
++        Map<String, String> names = new HashMap<>();
++        Set<String> warnings = new HashSet<>();
++        for (UpbitMarket m : market.markets()) {
++            names.put(m.market(), m.koreanName());
++            if (m.warning()) {
++                warnings.add(m.market());
++            }
++        }
++        return engine.run(s, unit, market.candles(unit), names, warnings);
++    }
++
++    @ExceptionHandler(IllegalArgumentException.class)
++    public ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException e) {
++        return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
++    }
++
++    @ExceptionHandler(IllegalStateException.class)
++    public ResponseEntity<Map<String, String>> notReady(IllegalStateException e) {
++        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("message", e.getMessage()));
++    }
++}
+diff --git a/backend/src/test/java/com/lhk/upbitagent/backtest/BacktestEngineTest.java b/backend/src/test/java/com/lhk/upbitagent/backtest/BacktestEngineTest.java
+new file mode 100644
+index 0000000..d7fb5b6
+--- /dev/null
++++ b/backend/src/test/java/com/lhk/upbitagent/backtest/BacktestEngineTest.java
+@@ -0,0 +1,135 @@
++package com.lhk.upbitagent.backtest;
++
++import com.lhk.upbitagent.agent.AgentEngine;
++import com.lhk.upbitagent.agent.Strategy;
++import com.lhk.upbitagent.agent.TradeMode;
++import com.lhk.upbitagent.domain.Candle;
++import com.lhk.upbitagent.domain.CandleUnit;
++import com.lhk.upbitagent.screener.ScreenerCondition;
++import org.junit.jupiter.api.Test;
++
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class BacktestEngineTest {
++
++    private static final long H = 3_600_000L;
++    private static final long T0 = 1_700_000_000_000L / H * H; // 정시에 맞춘 시작 시각
++
++    /** 수수료·슬리피지 0, 재진입 대기 없음 → 숫자를 눈으로 확인하기 쉽게 */
++    private final BacktestEngine engine = new BacktestEngine(new AgentEngine.Config(0, 0), 0);
++
++    /** 조건이 전부 꺼진 검색 (모든 종목 통과) */
++    private static ScreenerCondition all(ScreenerCondition.SortBy sort) {
++        return new ScreenerCondition(CandleUnit.MIN60, null, null, null, null, null, null, null, null, null,
++                null, null, null, null, null, null, null, null, null, sort, 10);
++    }
++
++    private static Strategy strategy(int maxPositions, Double tp, Double sl, Integer hold) {
++        return new Strategy(1L, "bt", all(ScreenerCondition.SortBy.TRADE_AMOUNT), null, 100_000, maxPositions,
++                tp, sl, null, hold, null, TradeMode.PAPER, true, 0L);
++    }
++
++    /** 같은 가격이 이어지다가 지정한 봉부터 가격이 바뀌는 캔들 */
++    private static List<Candle> series(int n, double base, int changeAt, double high, double low, double close) {
++        List<Candle> list = new ArrayList<>();
++        for (int i = 0; i < n; i++) {
++            if (i == changeAt) {
++                list.add(new Candle(T0 + i * H, base, high, low, close, 10, 1e9));
++            } else {
++                double p = i > changeAt ? close : base;
++                list.add(new Candle(T0 + i * H, p, p, p, p, 10, 1e9));
++            }
++        }
++        return list;
++    }
++
++    @Test
++    void 캔들이_부족하면_안내만_하고_거래없음() {
++        Map<String, List<Candle>> data = Map.of("KRW-A", series(30, 100, 99, 100, 100, 100));
++        BacktestEngine.Result r = engine.run(strategy(1, 5.0, 3.0, null), CandleUnit.MIN60, data, Map.of(), Set.of());
++        assertEquals(0, r.tradeCount());
++        assertTrue(r.notes().get(0).contains("캔들이 부족"));
++    }
++
++    @Test
++    void 익절_봉의_고가로_체결() {
++        // 69번 봉 종가(100)에 매수 → 80번 봉에서 고가 106 → 익절가 105 에 매도
++        Map<String, List<Candle>> data = Map.of("KRW-A", series(100, 100, 80, 106, 99, 104));
++        BacktestEngine.Result r = engine.run(strategy(1, 5.0, 3.0, null), CandleUnit.MIN60, data,
++                Map.of("KRW-A", "에이"), Set.of());
++
++        BacktestEngine.BtTrade first = r.trades().get(0);
++        assertEquals("익절", first.reason());
++        assertEquals(100.0, first.buyPrice(), 1e-9);
++        assertEquals(105.0, first.sellPrice(), 1e-9);
++        assertEquals(5.0, first.pnlRate(), 1e-9);
++        assertEquals(T0 + 70 * H, first.buyAt());      // 69번 봉이 끝난 시각
++        assertEquals(T0 + 81 * H, first.sellAt());     // 80번 봉이 끝난 시각
++    }
++
++    @Test
++    void 한_봉에서_손절가와_익절가_모두_닿으면_손절() {
++        Map<String, List<Candle>> data = Map.of("KRW-A", series(100, 100, 80, 110, 90, 100));
++        BacktestEngine.Result r = engine.run(strategy(1, 5.0, 3.0, null), CandleUnit.MIN60, data, Map.of(), Set.of());
++        assertEquals("손절", r.trades().get(0).reason());
++        assertEquals(97.0, r.trades().get(0).sellPrice(), 1e-9);
++    }
++
++    @Test
++    void 갭하락이면_시가에_손절() {
++        List<Candle> list = series(100, 100, 999, 100, 100, 100);
++        list.set(80, new Candle(T0 + 80 * H, 90, 91, 88, 89, 10, 1e9)); // 시가부터 손절가(97) 아래
++        BacktestEngine.Result r = engine.run(strategy(1, 5.0, 3.0, null), CandleUnit.MIN60,
++                Map.of("KRW-A", list), Map.of(), Set.of());
++        assertEquals("손절", r.trades().get(0).reason());
++        assertEquals(90.0, r.trades().get(0).sellPrice(), 1e-9);
++    }
++
++    @Test
++    void 보유시간_초과는_종가에_매도하고_자리가_나면_다시_매수() {
++        Map<String, List<Candle>> data = Map.of("KRW-A", series(100, 100, 999, 100, 100, 100));
++        BacktestEngine.Result r = engine.run(strategy(1, null, null, 5), CandleUnit.MIN60, data, Map.of(), Set.of());
++        assertTrue(r.tradeCount() >= 5, "trades=" + r.tradeCount());
++        assertEquals("보유시간 초과", r.trades().get(0).reason());
++        assertEquals(5 * H, r.trades().get(0).sellAt() - r.trades().get(0).buyAt());
++        assertEquals(0.0, r.totalPnl(), 1e-9); // 가격이 그대로고 수수료 0 이면 손익 0
++    }
++
++    @Test
++    void 최대보유수만큼만_매수하고_기간종료시_평가() {
++        Map<String, List<Candle>> data = new HashMap<>();
++        data.put("KRW-A", series(100, 100, 999, 100, 100, 100));
++        data.put("KRW-B", series(100, 50, 999, 50, 50, 50));
++        data.put("KRW-C", series(100, 10, 999, 10, 10, 10));
++        BacktestEngine.Result r = engine.run(strategy(2, 50.0, 50.0, null), CandleUnit.MIN60, data, Map.of(), Set.of());
++
++        assertEquals(2, r.tradeCount());
++        assertTrue(r.trades().stream().allMatch(BacktestEngine.BtTrade::openAtEnd));
++        assertEquals(200_000.0, r.capital(), 1e-9);
++    }
++
++    @Test
++    void 수수료와_슬리피지가_있으면_가격이_그대로여도_손실() {
++        BacktestEngine real = new BacktestEngine(new AgentEngine.Config(0.0005, 0.001), 0);
++        Map<String, List<Candle>> data = Map.of("KRW-A", series(100, 100, 999, 100, 100, 100));
++        BacktestEngine.Result r = real.run(strategy(1, null, null, 5), CandleUnit.MIN60, data, Map.of(), Set.of());
++        assertTrue(r.totalPnl() < 0);
++        assertTrue(r.maxDrawdown() > 0);
++        assertNull(r.benchmarkReturnPct()); // 비트코인 데이터가 없으면 비교값 없음
++    }
++
++    @Test
++    void 비트코인_보유_수익률_비교() {
++        Map<String, List<Candle>> data = Map.of("KRW-BTC", series(100, 100, 90, 110, 100, 110));
++        BacktestEngine.Result r = engine.run(strategy(1, null, null, 1000), CandleUnit.MIN60, data, Map.of(), Set.of());
++        assertEquals(10.0, r.benchmarkReturnPct(), 1e-9);
++    }
++}
+diff --git a/backend/src/test/java/com/lhk/upbitagent/screener/ScreenerEngineTest.java b/backend/src/test/java/com/lhk/upbitagent/screener/ScreenerEngineTest.java
+index 1e382b6..aec8ecf 100644
+--- a/backend/src/test/java/com/lhk/upbitagent/screener/ScreenerEngineTest.java
++++ b/backend/src/test/java/com/lhk/upbitagent/screener/ScreenerEngineTest.java
+@@ -41,7 +41,7 @@ class ScreenerEngineTest {
+         double p = start;
+         for (int i = 0; i < 100; i++) {
+             double next = p * (1 + step);
+-            list.add(new Candle(i * 3_600_000L, p, Math.max(p, next) * 1.001, Math.min(p, next) * 0.999, next, 100));
++            list.add(new Candle(i * 3_600_000L, p, Math.max(p, next) * 1.001, Math.min(p, next) * 0.999, next, 100, 100 * next));
+             p = next;
+         }
+         return list;
+@@ -117,7 +117,7 @@ class ScreenerEngineTest {
+         List<Candle> surge = new ArrayList<>(trend(100, 0.001));
+         // 직전 완성봉(뒤에서 두 번째) 거래량을 평균의 5배로
+         Candle c98 = surge.get(98);
+-        surge.set(98, new Candle(c98.time(), c98.open(), c98.high(), c98.low(), c98.close(), 500));
++        surge.set(98, new Candle(c98.time(), c98.open(), c98.high(), c98.low(), c98.close(), 500, 500 * c98.close()));
+ 
+         List<MarketSnapshot> u = List.of(
+                 snap("KRW-FLAT", 5e10, false, trend(100, 0.001)),
+diff --git a/frontend/src/api/backendApi.js b/frontend/src/api/backendApi.js
+index 4500947..68e18bb 100644
+--- a/frontend/src/api/backendApi.js
++++ b/frontend/src/api/backendApi.js
+@@ -40,4 +40,10 @@ export const agentSummary = () => backend.get('/agent/summary').then(data);
+ export const agentLogs = (limit = 50) => backend.get('/agent/logs', { params: { limit } }).then(data);
+ export const runAgentNow = () => backend.post('/agent/run').then(data);
+ 
++// ---------- 백테스트 ----------
++// 저장 전 전략(설정 창 값)으로
++export const backtest = (req) => backend.post('/backtest', req, { timeout: 60000 }).then(data);
++// 저장된 전략으로
++export const backtestSaved = (id) => backend.post(`/strategies/${id}/backtest`, null, { timeout: 60000 }).then(data);
++
+ export default backend;
+diff --git a/frontend/src/components/BacktestModal.vue b/frontend/src/components/BacktestModal.vue
+new file mode 100644
+index 0000000..2b4e979
+--- /dev/null
++++ b/frontend/src/components/BacktestModal.vue
+@@ -0,0 +1,92 @@
++<template>
++  <div class="backdrop" @click.self="$emit('close')">
++    <div class="box" role="dialog" aria-modal="true" aria-labelledby="bt-title">
++      <div class="head">
++        <h5 id="bt-title" class="mb-0">백테스트 · {{ strategy.name }}</h5>
++        <button class="btn btn-sm btn-outline-secondary" aria-label="닫기" @click="$emit('close')">닫기</button>
++      </div>
++      <p class="sub">이 전략을 서버가 가진 과거 캔들에 그대로 적용해본 결과예요.</p>
++
++      <div v-if="loading" class="loading">계산 중…</div>
++      <div v-else-if="error" class="alert alert-warning py-2 mb-0">{{ error }}</div>
++      <BacktestResult v-else-if="result" :result="result" />
++    </div>
++  </div>
++</template>
++
++<script setup>
++import { ref, onMounted, onBeforeUnmount } from 'vue';
++import BacktestResult from './BacktestResult.vue';
++import { backtestSaved } from '../api/backendApi';
++import { apiError } from '../utils/format';
++
++const props = defineProps({
++  strategy: { type: Object, required: true }
++});
++
++const emit = defineEmits(['close']);
++
++const loading = ref(true);
++const error = ref('');
++const result = ref(null);
++
++onMounted(async () => {
++  window.addEventListener('keydown', onKey);
++  try {
++    result.value = await backtestSaved(props.strategy.id);
++  } catch (e) {
++    error.value = apiError(e, '백테스트 실패');
++  } finally {
++    loading.value = false;
++  }
++});
++
++const onKey = (e) => {
++  if (e.key === 'Escape') emit('close');
++};
++onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
++</script>
++
++<style scoped>
++.backdrop {
++  position: fixed;
++  inset: 0;
++  background: rgba(0, 0, 0, 0.6);
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  z-index: 1000;
++  padding: 16px;
++}
++
++.box {
++  text-align: left;
++  background: #161b22;
++  border: 1px solid #30363d;
++  border-radius: 12px;
++  padding: 20px 22px;
++  width: 100%;
++  max-width: 760px;
++  max-height: 90vh;
++  overflow-y: auto;
++}
++
++.head {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 8px;
++}
++
++.sub {
++  color: #8b949e;
++  font-size: 0.85rem;
++  margin: 6px 0 12px;
++}
++
++.loading {
++  color: #8b949e;
++  text-align: center;
++  padding: 40px 0;
++}
++</style>
+diff --git a/frontend/src/components/BacktestResult.vue b/frontend/src/components/BacktestResult.vue
+new file mode 100644
+index 0000000..f1c0293
+--- /dev/null
++++ b/frontend/src/components/BacktestResult.vue
+@@ -0,0 +1,202 @@
++<template>
++  <div class="bt">
++
++    <div class="period">
++      {{ UNIT_LABEL[result.unit] }} · {{ result.bars }}봉
++      <template v-if="result.from">· {{ formatDateTime(result.from) }} ~ {{ formatDateTime(result.to) }}</template>
++      · 대상 {{ result.marketCount }}종목
++    </div>
++
++    <!-- 요약 -->
++    <div class="stats">
++      <div class="stat">
++        <div class="label">총손익</div>
++        <div class="value"><PnlText :value="result.totalPnl" unit="원" /></div>
++        <div class="sub">투입 한도 {{ formatWon(result.capital) }} 대비 <PnlText :value="result.returnPct" /></div>
++      </div>
++      <div class="stat">
++        <div class="label">거래 · 승률</div>
++        <div class="value">{{ result.tradeCount }}건</div>
++        <div class="sub">승률 {{ result.winRate == null ? '—' : result.winRate.toFixed(1) + '%' }}</div>
++      </div>
++      <div class="stat">
++        <div class="label">최대 낙폭</div>
++        <div class="value pnl-down">{{ result.maxDrawdown > 0 ? '-' + formatWon(result.maxDrawdown) : '0원' }}</div>
++        <div class="sub">{{ result.maxDrawdownPct == null ? '' : '한도 대비 -' + result.maxDrawdownPct.toFixed(2) + '%' }}</div>
++      </div>
++      <div class="stat">
++        <div class="label">비트코인 그냥 보유</div>
++        <div class="value"><PnlText :value="result.benchmarkReturnPct" /></div>
++        <div class="sub">평균 보유 {{ result.avgHoldHours == null ? '—' : result.avgHoldHours.toFixed(1) + '시간' }}</div>
++      </div>
++    </div>
++
++    <!-- 수익곡선 -->
++    <div v-if="result.equity.length" class="curve">
++      <apexchart type="area" height="200" :options="chartOptions" :series="series" />
++    </div>
++
++    <!-- 거래 목록 -->
++    <div v-if="result.trades.length" class="trades">
++      <table class="table table-dark table-sm align-middle mb-0">
++        <thead>
++          <tr>
++            <th>종목</th>
++            <th>매수</th>
++            <th class="text-end">매수가</th>
++            <th>매도</th>
++            <th class="text-end">매도가</th>
++            <th class="text-end">수익률</th>
++            <th>사유</th>
++          </tr>
++        </thead>
++        <tbody>
++          <tr v-for="(t, i) in result.trades" :key="i">
++            <td>{{ t.koreanName }}</td>
++            <td class="small">{{ formatDateTime(t.buyAt).slice(5) }}</td>
++            <td class="text-end">{{ formatPrice(t.buyPrice) }}</td>
++            <td class="small">{{ formatDateTime(t.sellAt).slice(5) }}</td>
++            <td class="text-end">{{ formatPrice(t.sellPrice) }}</td>
++            <td class="text-end"><PnlText :value="t.pnlRate" /></td>
++            <td class="small text-secondary">{{ t.reason }}</td>
++          </tr>
++        </tbody>
++      </table>
++    </div>
++    <div v-else class="empty">이 기간에는 조건에 맞아 매수한 종목이 없어요.</div>
++
++    <!-- 주의사항 -->
++    <details class="notes">
++      <summary>계산 방식과 한계</summary>
++      <ul>
++        <li v-for="n in result.notes" :key="n">{{ n }}</li>
++      </ul>
++    </details>
++  </div>
++</template>
++
++<script setup>
++import { computed } from 'vue';
++import PnlText from './PnlText.vue';
++import { formatWon, formatPrice, formatDateTime } from '../utils/format';
++
++const props = defineProps({
++  result: { type: Object, required: true }
++});
++
++const UNIT_LABEL = { MIN15: '15분봉', MIN60: '1시간봉', MIN240: '4시간봉', DAY: '일봉' };
++
++const series = computed(() => [{
++  name: '누적 손익(원)',
++  data: props.result.equity.map((p) => ({ x: p.time, y: Math.round(p.pnl) }))
++}]);
++
++// 최종 손익이 플러스면 빨강, 마이너스면 파랑
++const chartOptions = computed(() => {
++  const color = props.result.totalPnl >= 0 ? '#ef4444' : '#3b82f6';
++  return {
++    chart: { type: 'area', background: 'transparent', toolbar: { show: false }, animations: { enabled: false } },
++    theme: { mode: 'dark' },
++    colors: [color],
++    stroke: { width: 2, curve: 'straight' },
++    fill: { type: 'solid', opacity: 0.12 },
++    dataLabels: { enabled: false },
++    grid: { borderColor: '#30363d' },
++    xaxis: { type: 'datetime', labels: { datetimeUTC: false } },
++    yaxis: { labels: { formatter: (v) => Math.round(v).toLocaleString('ko-KR') } },
++    tooltip: { x: { format: 'MM-dd HH:mm' } },
++    annotations: { yaxis: [{ y: 0, borderColor: '#8b949e', strokeDashArray: 4 }] }
++  };
++});
++</script>
++
++<style scoped>
++.bt {
++  text-align: left;
++}
++
++.period {
++  color: #8b949e;
++  font-size: 0.82rem;
++  margin-bottom: 10px;
++}
++
++.stats {
++  display: grid;
++  grid-template-columns: repeat(4, 1fr);
++  gap: 8px;
++}
++
++@media (max-width: 700px) {
++  .stats {
++    grid-template-columns: repeat(2, 1fr);
++  }
++}
++
++.stat {
++  background: #0d1117;
++  border-radius: 8px;
++  padding: 10px 12px;
++}
++
++.stat .label {
++  color: #8b949e;
++  font-size: 0.75rem;
++}
++
++.stat .value {
++  font-size: 1.1rem;
++  font-weight: 600;
++  font-variant-numeric: tabular-nums;
++}
++
++.stat .sub {
++  color: #8b949e;
++  font-size: 0.78rem;
++}
++
++.curve {
++  margin-top: 10px;
++}
++
++.trades {
++  max-height: 240px;
++  overflow: auto;
++  margin-top: 6px;
++}
++
++th {
++  font-size: 0.75rem;
++  color: #8b949e;
++  white-space: nowrap;
++  position: sticky;
++  top: 0;
++}
++
++td {
++  white-space: nowrap;
++  font-variant-numeric: tabular-nums;
++  font-size: 0.85rem;
++}
++
++.empty {
++  color: #8b949e;
++  text-align: center;
++  padding: 18px 0;
++}
++
++.notes {
++  margin-top: 10px;
++  font-size: 0.8rem;
++  color: #8b949e;
++}
++
++.notes summary {
++  cursor: pointer;
++}
++
++.notes ul {
++  margin: 6px 0 0;
++  padding-left: 18px;
++}
++</style>
+diff --git a/frontend/src/components/StrategyModal.vue b/frontend/src/components/StrategyModal.vue
+index 86e5289..3b377c7 100644
+--- a/frontend/src/components/StrategyModal.vue
++++ b/frontend/src/components/StrategyModal.vue
+@@ -67,9 +67,21 @@
+ 
+       <div v-if="error" class="alert alert-warning py-2 mt-3 mb-0">{{ error }}</div>
+ 
++      <!-- 백테스트 결과 (설정을 바꾸면 다시 돌려야 하므로 바뀐 경우 표시) -->
++      <div v-if="btResult" class="bt-box">
++        <div class="section-title">
++          백테스트 결과
++          <small v-if="btStale" class="stale">· 설정이 바뀌었어요. 다시 돌려보세요</small>
++        </div>
++        <BacktestResult :result="btResult" />
++      </div>
++
+       <div class="actions">
+-        <button class="btn btn-outline-secondary" :disabled="saving" @click="$emit('close')">취소</button>
+-        <button class="btn btn-primary" :disabled="saving" @click="save">
++        <button class="btn btn-outline-secondary" :disabled="busy" @click="$emit('close')">취소</button>
++        <button class="btn btn-outline-light" :disabled="busy" @click="runBacktest">
++          {{ testing ? '계산 중…' : '백테스트' }}
++        </button>
++        <button class="btn btn-primary" :disabled="busy" @click="save">
+           {{ saving ? '저장 중…' : '저장하고 시작' }}
+         </button>
+       </div>
+@@ -79,7 +91,8 @@
+ 
+ <script setup>
+ import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue';
+-import { createStrategy } from '../api/backendApi';
++import { createStrategy, backtest } from '../api/backendApi';
++import BacktestResult from './BacktestResult.vue';
+ import { conditionLabels, formatWon, apiError } from '../utils/format';
+ 
+ const props = defineProps({
+@@ -101,30 +114,52 @@ const form = reactive({
+ });
+ 
+ const saving = ref(false);
++const testing = ref(false);
++const busy = computed(() => saving.value || testing.value);
+ const error = ref('');
+ 
++const btResult = ref(null);
++let btFormJson = '';
++const btStale = computed(() => btResult.value && JSON.stringify(form) !== btFormJson);
++
+ const maxExposure = computed(() => (form.orderKrw || 0) * (form.maxPositions || 0));
+ 
+ // 빈칸('') → null
+ const num = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : null);
+ 
++const toRequest = () => ({
++  name: form.name,
++  condition: props.condition,
++  naturalText: props.naturalText || null,
++  orderKrw: num(form.orderKrw),
++  maxPositions: num(form.maxPositions),
++  takeProfitPct: num(form.takeProfitPct),
++  stopLossPct: num(form.stopLossPct),
++  trailingStopPct: num(form.trailingStopPct),
++  maxHoldHours: num(form.maxHoldHours),
++  dailyLossLimitKrw: num(form.dailyLossLimitKrw),
++  enabled: true
++});
++
++// 저장하기 전에 같은 설정으로 과거 데이터에서 돌려보기
++const runBacktest = async () => {
++  testing.value = true;
++  error.value = '';
++  try {
++    btResult.value = await backtest(toRequest());
++    btFormJson = JSON.stringify(form);
++  } catch (e) {
++    error.value = apiError(e, '백테스트 실패');
++  } finally {
++    testing.value = false;
++  }
++};
++
+ const save = async () => {
+   saving.value = true;
+   error.value = '';
+   try {
+-    const saved = await createStrategy({
+-      name: form.name,
+-      condition: props.condition,
+-      naturalText: props.naturalText || null,
+-      orderKrw: num(form.orderKrw),
+-      maxPositions: num(form.maxPositions),
+-      takeProfitPct: num(form.takeProfitPct),
+-      stopLossPct: num(form.stopLossPct),
+-      trailingStopPct: num(form.trailingStopPct),
+-      maxHoldHours: num(form.maxHoldHours),
+-      dailyLossLimitKrw: num(form.dailyLossLimitKrw),
+-      enabled: true
+-    });
++    const saved = await createStrategy(toRequest());
+     emit('saved', saved);
+   } catch (e) {
+     error.value = apiError(e, '저장 실패');
+@@ -135,7 +170,7 @@ const save = async () => {
+ 
+ // ESC 로 닫기
+ const onKey = (e) => {
+-  if (e.key === 'Escape' && !saving.value) emit('close');
++  if (e.key === 'Escape' && !busy.value) emit('close');
+ };
+ onMounted(() => window.addEventListener('keydown', onKey));
+ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
+@@ -160,7 +195,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
+   border-radius: 12px;
+   padding: 22px 24px;
+   width: 100%;
+-  max-width: 560px;
++  max-width: 760px;
+   max-height: 90vh;
+   overflow-y: auto;
+ }
+@@ -233,6 +268,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
+   font-variant-numeric: tabular-nums;
+ }
+ 
++.bt-box {
++  margin-top: 16px;
++  border-top: 1px solid #30363d;
++  padding-top: 12px;
++}
++
++.stale {
++  color: #f0b429;
++}
++
+ .actions {
+   display: flex;
+   justify-content: flex-end;
+diff --git a/frontend/src/views/AgentView.vue b/frontend/src/views/AgentView.vue
+index 8efdc55..1f78763 100644
+--- a/frontend/src/views/AgentView.vue
++++ b/frontend/src/views/AgentView.vue
+@@ -124,6 +124,7 @@
+             <span class="mode">{{ s.mode === 'PAPER' ? '모의매매' : '실매매' }}</span>
+           </div>
+           <div class="d-flex gap-2">
++            <button class="btn btn-sm btn-outline-light" :disabled="busy" @click="btStrategy = s">백테스트</button>
+             <button v-if="s.enabled" class="btn btn-sm btn-outline-warning" :disabled="busy" @click="toggle(s)">정지</button>
+             <button v-else class="btn btn-sm btn-outline-success" :disabled="busy" @click="toggle(s)">시작</button>
+             <button class="btn btn-sm btn-outline-danger" :disabled="busy" @click="remove(s)">삭제</button>
+@@ -140,12 +141,14 @@
+       </div>
+     </div>
+ 
++    <BacktestModal v-if="btStrategy" :strategy="btStrategy" @close="btStrategy = null" />
+   </div>
+ </template>
+ 
+ <script setup>
+ import { ref, onActivated, onDeactivated, onBeforeUnmount } from 'vue';
+ import PnlText from '../components/PnlText.vue';
++import BacktestModal from '../components/BacktestModal.vue';
+ import {
+   agentSummary, listPositions, agentLogs, listStrategies,
+   startStrategy, stopStrategy, deleteStrategy, closeTrade, runAgentNow
+@@ -166,6 +169,7 @@ const error = ref('');
+ const busy = ref(false);
+ const updatedAt = ref(Date.now());
+ const now = ref(Date.now());
++const btStrategy = ref(null);
+ 
+ let timer = null;
+ 
+-- 
+2.43.0
+

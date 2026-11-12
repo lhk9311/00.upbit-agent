@@ -1,0 +1,3047 @@
+From 78223d35daa3def99b18ca9511b90fcc17158d4b Mon Sep 17 00:00:00 2001
+From: lhk9311 <lhk9311@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 16:04:14 +0900
+Subject: [PATCH 2/2] =?UTF-8?q?feat:=20=EB=AA=A8=EC=9D=98=EB=A7=A4?=
+ =?UTF-8?q?=EB=A7=A4=20=EC=97=90=EC=9D=B4=EC=A0=84=ED=8A=B8,=20=EC=97=90?=
+ =?UTF-8?q?=EC=9D=B4=EC=A0=84=ED=8A=B8=20=ED=98=84=ED=99=A9=C2=B7=ED=88=AC?=
+ =?UTF-8?q?=EC=9E=90=20=ED=9E=88=EC=8A=A4=ED=86=A0=EB=A6=AC=20=ED=83=AD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- AgentEngine: 손절/익절/트레일링/보유시간 매도, 빈 자리만큼 매수, 일일 손실 한도, 재진입 대기 (+ 단위 테스트)
+- 수수료 0.05%, 체결가 0.1% 불리를 매수·매도에 반영한 모의 체결
+- H2 파일 DB: strategy / trade / agent_log (MariaDB 호환 SQL)
+- API: 전략 CRUD·시작·정지, 보유 종목·평가손익, 수동 매도, 거래 조회(정렬·필터), 요약, 활동 기록
+- 화면: 검색 결과에서 전략 저장·시작, 에이전트 현황 탭, 투자 히스토리 탭(진행 중은 매수가만)
+- 화면 폭 제한(1126px) 해제
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1jPsn35rbk8vNba5SX2E9
+---
+ .gitignore                                    |   1 +
+ README.md                                     |  45 +-
+ backend/build.gradle                          |   4 +
+ .../com/lhk/upbitagent/agent/AgentEngine.java | 185 ++++++++
+ .../lhk/upbitagent/agent/AgentService.java    | 240 +++++++++++
+ .../com/lhk/upbitagent/agent/Strategy.java    |  29 ++
+ .../lhk/upbitagent/agent/StrategyRequest.java |  88 ++++
+ .../java/com/lhk/upbitagent/agent/Trade.java  |  37 ++
+ .../com/lhk/upbitagent/agent/TradeMode.java   |   8 +
+ .../com/lhk/upbitagent/agent/TradeStatus.java |   6 +
+ .../upbitagent/market/MarketDataStore.java    |  17 +
+ .../upbitagent/store/AgentLogRepository.java  |  44 ++
+ .../upbitagent/store/StrategyRepository.java  | 138 ++++++
+ .../lhk/upbitagent/store/TradeRepository.java | 194 +++++++++
+ .../lhk/upbitagent/web/AgentController.java   | 164 ++++++++
+ backend/src/main/resources/application.yml    |  26 +-
+ backend/src/main/resources/schema.sql         |  53 +++
+ .../lhk/upbitagent/agent/AgentEngineTest.java | 177 ++++++++
+ .../upbitagent/agent/StrategyRequestTest.java |  62 +++
+ frontend/src/App.vue                          |   4 +
+ frontend/src/api/backendApi.js                |  21 +
+ frontend/src/components/PnlText.vue           |  12 +-
+ frontend/src/components/ResultList.vue        |  28 +-
+ frontend/src/components/StrategyModal.vue     | 242 +++++++++++
+ frontend/src/utils/format.js                  |  88 ++++
+ frontend/src/views/AgentView.vue              | 394 +++++++++++++++++-
+ frontend/src/views/HistoryView.vue            | 294 ++++++++++++-
+ frontend/src/views/ScreenerView.vue           |  42 +-
+ 28 files changed, 2596 insertions(+), 47 deletions(-)
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/agent/AgentEngine.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/agent/StrategyRequest.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/agent/Trade.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/agent/TradeMode.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/agent/TradeStatus.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/store/AgentLogRepository.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/store/StrategyRepository.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/store/TradeRepository.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/web/AgentController.java
+ create mode 100644 backend/src/main/resources/schema.sql
+ create mode 100644 backend/src/test/java/com/lhk/upbitagent/agent/AgentEngineTest.java
+ create mode 100644 backend/src/test/java/com/lhk/upbitagent/agent/StrategyRequestTest.java
+ create mode 100644 frontend/src/components/StrategyModal.vue
+ create mode 100644 frontend/src/utils/format.js
+
+diff --git a/.gitignore b/.gitignore
+index 6b0e557..17f902c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -6,6 +6,7 @@ dist/
+ backend/build/
+ backend/.gradle/
+ backend/out/
++backend/data/
+ 
+ # IDE
+ .idea/
+diff --git a/README.md b/README.md
+index 40ebb50..59eee45 100644
+--- a/README.md
++++ b/README.md
+@@ -15,8 +15,8 @@ upbit-agent/
+ |---|---|---|
+ | 1 | 골조 이식, 차트 버그 수정, 상단 탭 | ✅ |
+ | 2 | 시세 수집기 + 조건 검색 API + 검색 화면 | ✅ |
+-| 3 | 모의매매 에이전트, 거래 테이블(DB), 투자 히스토리 탭 | ⏳ |
+-| 4 | 에이전트 현황 탭 (실시간 평가손익) | ⏳ |
++| 3 | 모의매매 에이전트, 거래 테이블(DB), 투자 히스토리 탭 | ✅ |
++| 4 | 에이전트 현황 탭 (실시간 평가손익) | ✅ |
+ | 5 | 백테스트 | ⏳ |
+ | 6 | 실주문 연결 (업비트 키, IP 허용, 한도) | ⏳ |
+ | 7 | 로그인, 배포 | ⏳ |
+@@ -67,7 +67,34 @@ npm run dev           # → http://localhost:5173
+ 
+ - **종목 검색**: 맨 위 자연어 입력 → 조건 패널(해석 결과, 직접 수정 가능) → 아래에 조건 통과 종목 최대 10개 + 선택 종목 차트
+ - **실시간 시세**: 기존 `00.upbit-chart` 화면 (코인 목록 + 차트)
+-- **에이전트 현황 / 투자 히스토리 / 설정**: 3단계 이후 구현 예정
++- **에이전트 현황**: 보유 평가손익·오늘/누적 실현손익·승률, 보유 종목(평가수익률, 수동 매도), 활동 기록, 전략 시작·정지·삭제 (5초마다 갱신)
++- **투자 히스토리**: 전체 거래. 완료 거래는 매수·매도 가격 모두, 진행 중 거래는 매수 가격만. 종목명·매수일시·매수가·매도일시·매도가·수익률·손익 정렬, 상태·전략·기간 필터
++- **설정**: 이후 단계에서 구현
++
++수익률·손익은 한국 관례대로 **플러스 빨강, 마이너스 파랑**.
++
++## 모의매매 에이전트
++
++검색 결과에서 **이 조건으로 에이전트 시작**을 누르면 전략(매수 조건 + 매도 규칙 + 리스크 한도)이 저장되고 바로 실행된다.
++
++1분마다 (`agent.cycle-ms`) 전략별로:
++1. 보유 종목 매도 판단: **손절 → 익절 → 트레일링(수익 구간에서 최고가 대비 하락) → 최대 보유 시간** 순
++2. 오늘 실현손실이 일일 손실 한도를 넘으면 신규 매수 중단
++3. 빈 자리(최대 보유 수 − 보유 수)만큼 조건 검색 상위 종목 매수. 이미 보유 중이거나 최근 60분 안에 판 종목은 제외
++
++- 지금은 **모의매매만** 지원한다. 실제 주문은 나가지 않고 현재가로 체결됐다고 가정해 기록한다.
++- 결과가 실제보다 좋게 나오지 않도록 **수수료 0.05%**와 **체결가 0.1% 불리**를 매수·매도 양쪽에 반영한다 (`application.yml`의 `agent.*`).
++- 전략을 **정지**하면 신규 매수만 멈추고, 보유 종목은 매도 규칙대로 계속 관리한다.
++- 현재가 수신이 1분 넘게 끊기면 매매 판단을 쉬고 활동 기록에 남긴다.
++- 판단 로직(`AgentEngine`)은 순수 Java라 단위 테스트로 검증한다.
++
++### DB
++
++개발용 **H2 파일 DB**를 쓴다. 설치가 필요 없고, `backend/data/`에 저장돼 서버를 꺼도 기록이 남는다 (깃에는 올라가지 않음).
++
++- DB 콘솔: http://localhost:8080/h2-console (JDBC URL `jdbc:h2:file:./data/upbit-agent;MODE=MySQL;AUTO_SERVER=TRUE`, 사용자 `sa`, 비밀번호 없음)
++- 테이블: `strategy`(전략), `trade`(거래), `agent_log`(활동 기록) — `schema.sql`
++- 배포 때 MariaDB로 바꾸려면 `build.gradle`의 H2 를 MariaDB 드라이버로, `application.yml`의 datasource 를 MariaDB 주소로 바꾸면 된다 (SQL 은 둘 다에서 동작하도록 작성).
+ 
+ ## 자연어 검색
+ 
+@@ -106,6 +133,18 @@ POST /api/screener              조건 검색 (요청 예시는 아래)
+ POST /api/screener/parse        자연어 → 조건 변환 { "text": "..." }
+ GET  /api/screener/parse/status 자연어 검색 사용 가능 여부 (API 키 설정 여부)
+ GET  /api/collector/status      수집 현황
++
++GET  /api/strategies             전략 목록
++POST /api/strategies             전략 저장 (+ 바로 실행)
++POST /api/strategies/{id}/start  시작
++POST /api/strategies/{id}/stop   정지 (신규 매수만 중단)
++DELETE /api/strategies/{id}      삭제 (보유 종목이 없을 때만)
++GET  /api/positions              보유 종목 + 평가손익
++POST /api/trades/{id}/close      수동 매도
++GET  /api/trades                 투자 히스토리 (status, strategyId, from, to, sort, dir)
++GET  /api/agent/summary          요약 (실현손익, 승률, 평가손익)
++GET  /api/agent/logs             활동 기록
++POST /api/agent/run              한 주기 즉시 실행
+ ```
+ 
+ ```json
+diff --git a/backend/build.gradle b/backend/build.gradle
+index a11480e..8d8a25d 100644
+--- a/backend/build.gradle
++++ b/backend/build.gradle
+@@ -18,6 +18,10 @@ repositories {
+ 
+ dependencies {
+     implementation 'org.springframework.boot:spring-boot-starter-web'
++    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
++
++    // 개발용 내장 DB (파일 저장). 운영(cafe24)에서는 MariaDB 드라이버로 교체
++    runtimeOnly 'com.h2database:h2'
+ 
+     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/AgentEngine.java b/backend/src/main/java/com/lhk/upbitagent/agent/AgentEngine.java
+new file mode 100644
+index 0000000..36df3c8
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/AgentEngine.java
+@@ -0,0 +1,185 @@
++package com.lhk.upbitagent.agent;
++
++import com.lhk.upbitagent.screener.ScreenerResult;
++
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++
++/**
++ * 에이전트의 판단 로직. "지금 무엇을 팔고 무엇을 살지"만 결정하고,
++ * 실제 저장·주문은 AgentService 가 한다. Spring 에 의존하지 않아 단위 테스트가 쉽다.
++ *
++ * 한 주기(cycle)에서
++ * 1) 보유 포지션마다 매도 규칙 확인: 손절 → 익절 → 트레일링 → 보유시간 순서
++ * 2) 오늘 실현손실이 한도를 넘었으면 신규 매수 중단
++ * 3) 빈 자리(최대 보유 수 - 보유 수)만큼 조건 검색 상위 종목을 매수
++ *    (이미 보유 중이거나, 최근에 판 종목(재진입 대기)은 건너뜀)
++ */
++public class AgentEngine {
++
++    /** 업비트 KRW 마켓 최소 주문 금액 */
++    public static final double MIN_ORDER_KRW = 5_000;
++
++    private static final long HOUR = 60 * 60 * 1000L;
++
++    /**
++     * @param feeRate  거래 수수료율 (업비트 KRW 마켓 0.05% = 0.0005)
++     * @param slippage 모의 체결 가격 불리하게 조정하는 비율 (0.001 = 0.1%)
++     */
++    public record Config(double feeRate, double slippage) {
++        public static Config defaults() {
++            return new Config(0.0005, 0.001);
++        }
++    }
++
++    public record SellOrder(Trade trade, double marketPrice, String reason) {
++    }
++
++    public record BuyOrder(String market, String koreanName, double marketPrice) {
++    }
++
++    public record HighUpdate(long tradeId, double highestPrice) {
++    }
++
++    public record Decision(List<SellOrder> sells, List<BuyOrder> buys, List<HighUpdate> highs, List<String> notes) {
++    }
++
++    private final Config config;
++
++    public AgentEngine(Config config) {
++        this.config = config;
++    }
++
++    /**
++     * @param strategy         전략
++     * @param openTrades       이 전략의 진행 중 거래
++     * @param prices           종목별 현재가
++     * @param candidates       조건 검색 결과 (정렬된 순서). null 이면 매수 판단을 하지 않는다
++     * @param todayRealizedPnl 이 전략의 오늘 실현손익(원)
++     * @param cooldownMarkets  재진입 대기 중인 종목 (최근에 매도한 종목)
++     * @param now              현재 시각(ms)
++     */
++    public Decision decide(Strategy strategy,
++                           List<Trade> openTrades,
++                           Map<String, Double> prices,
++                           List<ScreenerResult.Item> candidates,
++                           double todayRealizedPnl,
++                           Set<String> cooldownMarkets,
++                           long now) {
++
++        List<SellOrder> sells = new ArrayList<>();
++        List<HighUpdate> highs = new ArrayList<>();
++        List<String> notes = new ArrayList<>();
++
++        // ---------- 1. 매도 ----------
++        for (Trade t : openTrades) {
++            Double price = prices.get(t.market());
++            if (price == null) {
++                continue; // 현재가를 모르면 판단 보류
++            }
++
++            double high = Math.max(t.highestPrice(), price);
++            if (high > t.highestPrice()) {
++                highs.add(new HighUpdate(t.id(), high));
++            }
++
++            String reason = exitReason(strategy, t, price, high, now);
++            if (reason != null) {
++                sells.add(new SellOrder(t, price, reason));
++            }
++        }
++
++        // ---------- 2~3. 매수 ----------
++        List<BuyOrder> buys = new ArrayList<>();
++
++        if (!strategy.enabled()) {
++            return new Decision(sells, buys, highs, notes); // 정지된 전략은 매도만
++        }
++        if (candidates == null) {
++            notes.add("시세 데이터 수집 중이라 매수 판단을 건너뜀");
++            return new Decision(sells, buys, highs, notes);
++        }
++        if (strategy.dailyLossLimitKrw() != null && todayRealizedPnl <= -strategy.dailyLossLimitKrw()) {
++            notes.add(String.format(Locale.ROOT, "오늘 실현손실 %,.0f원 → 일일 손실 한도 도달, 신규 매수 중단", todayRealizedPnl));
++            return new Decision(sells, buys, highs, notes);
++        }
++        if (strategy.orderKrw() < MIN_ORDER_KRW) {
++            notes.add("1회 주문 금액이 최소 주문 금액(5,000원)보다 작아 매수하지 않음");
++            return new Decision(sells, buys, highs, notes);
++        }
++
++        int slots = strategy.maxPositions() - (openTrades.size() - sells.size());
++
++        Set<String> held = new HashSet<>();
++        for (Trade t : openTrades) {
++            held.add(t.market()); // 이번 주기에 파는 종목도 같은 주기에 다시 사지 않음
++        }
++
++        for (ScreenerResult.Item item : candidates) {
++            if (slots <= 0) {
++                break;
++            }
++            if (held.contains(item.market()) || cooldownMarkets.contains(item.market())) {
++                continue;
++            }
++            buys.add(new BuyOrder(item.market(), item.koreanName(), item.tradePrice()));
++            held.add(item.market());
++            slots--;
++        }
++
++        return new Decision(sells, buys, highs, notes);
++    }
++
++    /** 매도 사유. 매도하지 않으면 null */
++    String exitReason(Strategy s, Trade t, double price, double high, long now) {
++        double rate = (price - t.buyPrice()) / t.buyPrice() * 100;
++
++        if (s.stopLossPct() != null && rate <= -s.stopLossPct()) {
++            return String.format(Locale.ROOT, "손절 (%.2f%%)", rate);
++        }
++        if (s.takeProfitPct() != null && rate >= s.takeProfitPct()) {
++            return String.format(Locale.ROOT, "익절 (+%.2f%%)", rate);
++        }
++        if (s.trailingStopPct() != null && high > t.buyPrice()
++                && price <= high * (1 - s.trailingStopPct() / 100)) {
++            return String.format(Locale.ROOT, "트레일링 (최고가 대비 -%.2f%%)", (high - price) / high * 100);
++        }
++        if (s.maxHoldHours() != null && now - t.buyAt() >= s.maxHoldHours() * HOUR) {
++            return "보유시간 " + s.maxHoldHours() + "시간 초과";
++        }
++        return null;
++    }
++
++    // ---------- 모의 체결 계산 ----------
++
++    /** 매수 체결: 주문 금액(수수료 포함) 안에서 살 수 있는 만큼 */
++    public Trade openTrade(Strategy s, BuyOrder order, long now) {
++        double fill = order.marketPrice() * (1 + config.slippage());
++        double amount = s.orderKrw() / (1 + config.feeRate());
++        double qty = amount / fill;
++        double fee = amount * config.feeRate();
++
++        return new Trade(null, s.id(), s.name(), order.market(), order.koreanName(),
++                TradeStatus.OPEN, s.mode(),
++                fill, qty, amount, fee, now, fill,
++                null, null, null, null, null, null, null);
++    }
++
++    /** 매도 체결: 수수료를 빼고 실현손익 계산 */
++    public Trade closeTrade(Trade t, double marketPrice, String reason, long now) {
++        double fill = marketPrice * (1 - config.slippage());
++        double amount = fill * t.quantity();
++        double fee = amount * config.feeRate();
++        double pnl = amount - fee - t.cost();
++        double pnlRate = pnl / t.cost() * 100;
++
++        return new Trade(t.id(), t.strategyId(), t.strategyName(), t.market(), t.koreanName(),
++                TradeStatus.CLOSED, t.mode(),
++                t.buyPrice(), t.quantity(), t.buyAmount(), t.buyFee(), t.buyAt(), t.highestPrice(),
++                fill, amount, fee, now, reason, pnl, pnlRate);
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java b/backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java
+new file mode 100644
+index 0000000..aadd33a
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java
+@@ -0,0 +1,240 @@
++package com.lhk.upbitagent.agent;
++
++import com.lhk.upbitagent.domain.CandleUnit;
++import com.lhk.upbitagent.market.MarketDataStore;
++import com.lhk.upbitagent.screener.ScreenerCondition;
++import com.lhk.upbitagent.screener.ScreenerEngine;
++import com.lhk.upbitagent.screener.ScreenerResult;
++import com.lhk.upbitagent.store.AgentLogRepository;
++import com.lhk.upbitagent.store.StrategyRepository;
++import com.lhk.upbitagent.store.TradeRepository;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Service;
++
++import java.time.LocalDate;
++import java.time.ZoneId;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++
++/**
++ * 에이전트 실행기. 주기마다 전략별로 AgentEngine 에 판단을 맡기고, 결과를 DB 에 반영한다.
++ * 지금은 모의매매(PAPER)만 지원한다. 실매매(LIVE)는 6단계에서 업비트 주문 API 와 연결.
++ */
++@Service
++public class AgentService {
++
++    private static final Logger log = LoggerFactory.getLogger(AgentService.class);
++    private static final ZoneId KST = ZoneId.of("Asia/Seoul");
++    /** 현재가가 이보다 오래됐으면 매매 판단을 하지 않는다 */
++    private static final long MAX_PRICE_AGE_MS = 60_000;
++
++    private final StrategyRepository strategies;
++    private final TradeRepository trades;
++    private final AgentLogRepository logs;
++    private final MarketDataStore market;
++    private final AgentEngine engine;
++    private final ScreenerEngine screener = new ScreenerEngine();
++    private final long cooldownMs;
++
++    /** 같은 안내 문구를 매 주기 반복해서 기록하지 않기 위한 마지막 문구 */
++    private final Map<Long, String> lastNote = new HashMap<>();
++    private boolean staleWarned = false;
++
++    public AgentService(StrategyRepository strategies, TradeRepository trades, AgentLogRepository logs,
++                        MarketDataStore market,
++                        @Value("${agent.fee-rate:0.0005}") double feeRate,
++                        @Value("${agent.paper-slippage:0.001}") double slippage,
++                        @Value("${agent.reentry-cooldown-minutes:60}") long cooldownMinutes) {
++        this.strategies = strategies;
++        this.trades = trades;
++        this.logs = logs;
++        this.market = market;
++        this.engine = new AgentEngine(new AgentEngine.Config(feeRate, slippage));
++        this.cooldownMs = cooldownMinutes * 60_000;
++    }
++
++    // ---------- 주기 실행 ----------
++
++    @Scheduled(fixedDelayString = "${agent.cycle-ms:60000}", initialDelay = 30_000)
++    public void scheduledCycle() {
++        runCycle();
++    }
++
++    /** 한 주기 실행. 수동 매도와 겹치지 않도록 synchronized */
++    public synchronized void runCycle() {
++        if (!market.pricesFresherThan(MAX_PRICE_AGE_MS)) {
++            if (!staleWarned) {
++                logs.add(null, "WARN", "현재가 수신이 지연돼 매매 판단을 쉬어요 (업비트 연결 확인)");
++                staleWarned = true;
++            }
++            return;
++        }
++        staleWarned = false;
++
++        Map<String, Double> prices = market.prices();
++        long now = System.currentTimeMillis();
++
++        for (Strategy s : strategies.findAll()) {
++            try {
++                runStrategy(s, prices, now);
++            } catch (Exception e) {
++                log.error("전략 {} 실행 실패", s.id(), e);
++                logs.add(s.id(), "WARN", "[" + s.name() + "] 실행 중 오류: " + e.getMessage());
++            }
++        }
++    }
++
++    private void runStrategy(Strategy s, Map<String, Double> prices, long now) {
++        List<Trade> open = trades.findOpenByStrategy(s.id());
++        if (!s.enabled() && open.isEmpty()) {
++            return;
++        }
++
++        List<ScreenerResult.Item> candidates = null;
++        if (s.enabled()) {
++            ScreenerCondition cond = s.condition();
++            CandleUnit unit = cond.unitOrDefault();
++            if (market.isReady(unit)) {
++                candidates = screener.evaluate(market.snapshots(unit), cond).items();
++            }
++        }
++
++        double todayPnl = trades.realizedPnlSince(s.id(), startOfTodayKst());
++        Set<String> cooldown = trades.soldMarketsSince(s.id(), now - cooldownMs);
++
++        AgentEngine.Decision d = engine.decide(s, open, prices, candidates, todayPnl, cooldown, now);
++
++        for (AgentEngine.HighUpdate h : d.highs()) {
++            trades.updateHighest(h.tradeId(), h.highestPrice());
++        }
++
++        for (AgentEngine.SellOrder order : d.sells()) {
++            sell(order.trade(), order.marketPrice(), order.reason(), now);
++        }
++
++        for (AgentEngine.BuyOrder order : d.buys()) {
++            if (s.mode() == TradeMode.LIVE) {
++                note(s, "실매매(LIVE)는 아직 지원하지 않아 매수를 건너뛰었어요");
++                break;
++            }
++            Trade t = engine.openTrade(s, order, now);
++            trades.insert(t);
++            logs.add(s.id(), "BUY", String.format(Locale.ROOT, "[%s] %s 매수 %s원 × %s (%,.0f원)",
++                    s.name(), t.koreanName(), price(t.buyPrice()), qty(t.quantity()), t.cost()));
++        }
++
++        if (!d.notes().isEmpty()) {
++            note(s, String.join(" / ", d.notes()));
++        } else {
++            lastNote.remove(s.id());
++        }
++    }
++
++    private void sell(Trade t, double marketPrice, String reason, long now) {
++        Trade closed = engine.closeTrade(t, marketPrice, reason, now);
++        if (trades.close(closed)) {
++            logs.add(t.strategyId(), "SELL", String.format(Locale.ROOT, "[%s] %s 매도 %s원 · %s · %+.2f%% (%+,.0f원)",
++                    t.strategyName(), t.koreanName(), price(closed.sellPrice()), reason, closed.pnlRate(), closed.pnl()));
++        }
++    }
++
++    private void note(Strategy s, String message) {
++        if (!message.equals(lastNote.get(s.id()))) {
++            logs.add(s.id(), "INFO", "[" + s.name() + "] " + message);
++            lastNote.put(s.id(), message);
++        }
++    }
++
++    // ---------- 화면에서 호출 ----------
++
++    /** 진행 중 거래를 현재가로 바로 매도 */
++    public synchronized Trade closeManually(long tradeId) {
++        Trade t = trades.findById(tradeId)
++                .orElseThrow(() -> new IllegalArgumentException("거래를 찾을 수 없어요: " + tradeId));
++        if (t.status() != TradeStatus.OPEN) {
++            throw new IllegalArgumentException("이미 매도된 거래예요.");
++        }
++        Double p = market.price(t.market());
++        if (p == null) {
++            throw new IllegalStateException("현재가를 아직 받지 못했어요. 잠시 후 다시 시도해주세요.");
++        }
++        sell(t, p, "수동 매도", System.currentTimeMillis());
++        return trades.findById(tradeId).orElseThrow();
++    }
++
++    /** 진행 중 거래 + 지금 팔면 얼마인지(수수료·슬리피지 반영) */
++    public List<Position> positions() {
++        long now = System.currentTimeMillis();
++        return trades.findOpen().stream().map(t -> {
++            Double p = market.price(t.market());
++            if (p == null) {
++                return new Position(t, null, null, null);
++            }
++            Trade ifSold = engine.closeTrade(t, p, "", now);
++            return new Position(t, p, ifSold.pnl(), ifSold.pnlRate());
++        }).toList();
++    }
++
++    public Summary summary() {
++        Map<String, Object> st = trades.closedStats();
++        long closedCount = num(st.get("closed_count")).longValue();
++        long winCount = num(st.get("win_count")).longValue();
++        double realized = num(st.get("realized_pnl")).doubleValue();
++        double totalCost = num(st.get("total_cost")).doubleValue();
++
++        List<Position> positions = positions();
++        double evalPnl = positions.stream().mapToDouble(p -> p.evalPnl() == null ? 0 : p.evalPnl()).sum();
++        double openCost = positions.stream().mapToDouble(p -> p.trade().cost()).sum();
++
++        return new Summary(
++                closedCount,
++                closedCount == 0 ? null : winCount * 100.0 / closedCount,
++                realized,
++                totalCost == 0 ? null : realized / totalCost * 100,
++                trades.realizedPnlSince(null, startOfTodayKst()),
++                positions.size(),
++                openCost,
++                evalPnl,
++                openCost == 0 ? null : evalPnl / openCost * 100);
++    }
++
++    public record Position(Trade trade, Double currentPrice, Double evalPnl, Double evalPnlRate) {
++    }
++
++    public record Summary(
++            long closedCount,
++            Double winRate,            // 승률(%)
++            double realizedPnl,        // 누적 실현손익(원)
++            Double realizedPnlRate,    // 누적 실현수익률(%) = 실현손익 / 완료 거래 매수비용 합
++            double todayRealizedPnl,
++            int openCount,
++            double openCost,           // 보유 중 매수비용 합
++            double evalPnl,            // 보유 중 평가손익(원)
++            Double evalPnlRate
++    ) {
++    }
++
++    // ---------- 도우미 ----------
++
++    private static long startOfTodayKst() {
++        return LocalDate.now(KST).atStartOfDay(KST).toInstant().toEpochMilli();
++    }
++
++    private static Number num(Object o) {
++        return o instanceof Number n ? n : 0;
++    }
++
++    private static String price(double p) {
++        return p >= 100 ? String.format(Locale.ROOT, "%,.0f", p) : String.format(Locale.ROOT, "%,.4f", p);
++    }
++
++    private static String qty(double q) {
++        return String.format(Locale.ROOT, "%.6f", q);
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java b/backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java
+new file mode 100644
+index 0000000..d9fdd8c
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java
+@@ -0,0 +1,29 @@
++package com.lhk.upbitagent.agent;
++
++import com.lhk.upbitagent.screener.ScreenerCondition;
++
++/**
++ * 전략 = 매수 조건(조건 검색) + 매도 규칙 + 리스크 한도.
++ * 퍼센트 값은 % 단위(3 = 3%), null 이면 그 규칙은 사용하지 않는다.
++ */
++public record Strategy(
++        Long id,
++        String name,
++        ScreenerCondition condition,
++        String naturalText,         // 자연어로 입력한 원문 (패널로 직접 만들었으면 null)
++
++        double orderKrw,            // 1회 매수 금액(원, 수수료 포함)
++        int maxPositions,           // 동시에 보유할 최대 종목 수
++
++        Double takeProfitPct,       // 익절: 매수가 대비 +X% 이상
++        Double stopLossPct,         // 손절: 매수가 대비 -X% 이하 (양수로 입력)
++        Double trailingStopPct,     // 트레일링: 보유 중 최고가 대비 -X% (수익 구간에서만)
++        Integer maxHoldHours,       // 최대 보유 시간
++
++        Double dailyLossLimitKrw,   // 오늘 실현손실이 이 금액 이상이면 신규 매수 중단 (양수로 입력)
++
++        TradeMode mode,
++        boolean enabled,
++        Long createdAt
++) {
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/StrategyRequest.java b/backend/src/main/java/com/lhk/upbitagent/agent/StrategyRequest.java
+new file mode 100644
+index 0000000..e583007
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/StrategyRequest.java
+@@ -0,0 +1,88 @@
++package com.lhk.upbitagent.agent;
++
++import com.lhk.upbitagent.screener.ScreenerCondition;
++
++import java.util.ArrayList;
++import java.util.List;
++
++/**
++ * 화면에서 받는 전략 생성·수정 요청. toStrategy() 에서 검증한다.
++ */
++public record StrategyRequest(
++        String name,
++        ScreenerCondition condition,
++        String naturalText,
++        Double orderKrw,
++        Integer maxPositions,
++        Double takeProfitPct,
++        Double stopLossPct,
++        Double trailingStopPct,
++        Integer maxHoldHours,
++        Double dailyLossLimitKrw,
++        Boolean enabled
++) {
++
++    public static final int MAX_POSITIONS_LIMIT = 10;
++
++    /**
++     * 검증 후 Strategy 로 변환. 문제가 있으면 IllegalArgumentException (메시지는 화면에 그대로 표시).
++     * 지금은 모의매매만 지원하므로 mode 는 항상 PAPER.
++     */
++    public Strategy toStrategy(Long id, long createdAt) {
++        List<String> errors = new ArrayList<>();
++
++        if (condition == null) {
++            errors.add("검색 조건이 없어요");
++        }
++        if (orderKrw == null || orderKrw < AgentEngine.MIN_ORDER_KRW) {
++            errors.add("1회 매수 금액은 5,000원 이상이어야 해요 (업비트 최소 주문 금액)");
++        }
++        if (maxPositions == null || maxPositions < 1 || maxPositions > MAX_POSITIONS_LIMIT) {
++            errors.add("최대 보유 종목 수는 1~" + MAX_POSITIONS_LIMIT + "개 사이여야 해요");
++        }
++        positive(takeProfitPct, "익절 %", errors);
++        positive(stopLossPct, "손절 %", errors);
++        positive(trailingStopPct, "트레일링 %", errors);
++        if (stopLossPct != null && stopLossPct >= 100) {
++            errors.add("손절 %는 100보다 작아야 해요");
++        }
++        if (trailingStopPct != null && trailingStopPct >= 100) {
++            errors.add("트레일링 %는 100보다 작아야 해요");
++        }
++        if (maxHoldHours != null && maxHoldHours < 1) {
++            errors.add("최대 보유 시간은 1시간 이상이어야 해요");
++        }
++        positive(dailyLossLimitKrw, "일일 손실 한도", errors);
++
++        // 매도 규칙이 하나도 없으면 포지션이 영원히 안 닫힌다
++        if (takeProfitPct == null && stopLossPct == null && trailingStopPct == null && maxHoldHours == null) {
++            errors.add("매도 규칙(익절·손절·트레일링·최대 보유 시간)을 하나 이상 정해주세요");
++        }
++
++        if (!errors.isEmpty()) {
++            throw new IllegalArgumentException(String.join(" / ", errors));
++        }
++
++        String safeName = (name == null || name.isBlank()) ? "전략 " + (id == null ? "" : id) : name.trim();
++        if (safeName.length() > 100) {
++            safeName = safeName.substring(0, 100);
++        }
++        String text = (naturalText == null || naturalText.isBlank()) ? null : naturalText.trim();
++        if (text != null && text.length() > 500) {
++            text = text.substring(0, 500);
++        }
++
++        return new Strategy(id, safeName.trim(), condition, text,
++                orderKrw, maxPositions,
++                takeProfitPct, stopLossPct, trailingStopPct, maxHoldHours, dailyLossLimitKrw,
++                TradeMode.PAPER,
++                enabled == null || enabled,
++                createdAt);
++    }
++
++    private static void positive(Double v, String label, List<String> errors) {
++        if (v != null && v <= 0) {
++            errors.add(label + "는 0보다 커야 해요");
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/Trade.java b/backend/src/main/java/com/lhk/upbitagent/agent/Trade.java
+new file mode 100644
+index 0000000..3d8ab52
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/Trade.java
+@@ -0,0 +1,37 @@
++package com.lhk.upbitagent.agent;
++
++/**
++ * 거래 한 건 (매수 1번 + 매도 1번).
++ * OPEN(진행 중)이면 매도 관련 필드는 모두 null.
++ * 시각은 epoch ms, 금액은 원, pnlRate 는 % 단위.
++ */
++public record Trade(
++        Long id,
++        Long strategyId,
++        String strategyName,
++        String market,
++        String koreanName,
++        TradeStatus status,
++        TradeMode mode,
++
++        double buyPrice,        // 체결가(슬리피지 반영)
++        double quantity,
++        double buyAmount,       // buyPrice × quantity
++        double buyFee,
++        long buyAt,
++        double highestPrice,    // 보유 중 최고가 (트레일링 스탑용)
++
++        Double sellPrice,
++        Double sellAmount,
++        Double sellFee,
++        Long sellAt,
++        String sellReason,
++        Double pnl,             // 실현손익(원, 수수료 차감)
++        Double pnlRate          // 실현수익률(%)
++) {
++
++    /** 수수료 포함 총 매수 비용 */
++    public double cost() {
++        return buyAmount + buyFee;
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/TradeMode.java b/backend/src/main/java/com/lhk/upbitagent/agent/TradeMode.java
+new file mode 100644
+index 0000000..eafeb19
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/TradeMode.java
+@@ -0,0 +1,8 @@
++package com.lhk.upbitagent.agent;
++
++public enum TradeMode {
++    /** 모의매매: 실제 주문 없이 현재가로 체결됐다고 가정하고 기록만 한다 */
++    PAPER,
++    /** 실매매: 업비트 주문 API 사용 (6단계에서 구현 예정) */
++    LIVE
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/TradeStatus.java b/backend/src/main/java/com/lhk/upbitagent/agent/TradeStatus.java
+new file mode 100644
+index 0000000..2366046
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/TradeStatus.java
+@@ -0,0 +1,6 @@
++package com.lhk.upbitagent.agent;
++
++public enum TradeStatus {
++    OPEN,
++    CLOSED
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java b/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java
+index 6b219e1..2f974fa 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java
++++ b/backend/src/main/java/com/lhk/upbitagent/market/MarketDataStore.java
+@@ -65,6 +65,23 @@ public class MarketDataStore {
+         return candleUpdatedAt.get(unit);
+     }
+ 
++    /** 종목별 현재가 (에이전트 매도 판단·평가손익용) */
++    public Map<String, Double> prices() {
++        Map<String, Double> out = new LinkedHashMap<>();
++        tickers.forEach((market, t) -> out.put(market, t.tradePrice()));
++        return out;
++    }
++
++    public Double price(String market) {
++        UpbitTicker t = tickers.get(market);
++        return t == null ? null : t.tradePrice();
++    }
++
++    /** 현재가가 이 시간보다 오래됐으면 매매 판단에 쓰지 않는다 */
++    public boolean pricesFresherThan(long maxAgeMs) {
++        return tickerUpdatedAt != null && System.currentTimeMillis() - tickerUpdatedAt <= maxAgeMs;
++    }
++
+     /** 조건 검색용 스냅샷. 현재가가 있는 종목만 포함 */
+     public List<MarketSnapshot> snapshots(CandleUnit unit) {
+         Map<String, List<Candle>> unitCandles = candles.get(unit);
+diff --git a/backend/src/main/java/com/lhk/upbitagent/store/AgentLogRepository.java b/backend/src/main/java/com/lhk/upbitagent/store/AgentLogRepository.java
+new file mode 100644
+index 0000000..278de90
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/store/AgentLogRepository.java
+@@ -0,0 +1,44 @@
++package com.lhk.upbitagent.store;
++
++import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
++import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
++import org.springframework.stereotype.Repository;
++
++import java.util.List;
++
++import static com.lhk.upbitagent.store.StrategyRepository.nullableLong;
++
++@Repository
++public class AgentLogRepository {
++
++    public record AgentLog(long id, long createdAt, Long strategyId, String level, String message) {
++    }
++
++    private final NamedParameterJdbcTemplate jdbc;
++
++    public AgentLogRepository(NamedParameterJdbcTemplate jdbc) {
++        this.jdbc = jdbc;
++    }
++
++    public void add(Long strategyId, String level, String message) {
++        String msg = message.length() > 500 ? message.substring(0, 500) : message;
++        jdbc.update("""
++                INSERT INTO agent_log (created_at, strategy_id, level, message)
++                VALUES (:createdAt, :strategyId, :level, :message)
++                """, new MapSqlParameterSource()
++                .addValue("createdAt", System.currentTimeMillis())
++                .addValue("strategyId", strategyId)
++                .addValue("level", level)
++                .addValue("message", msg));
++    }
++
++    public List<AgentLog> recent(int limit) {
++        return jdbc.query("SELECT * FROM agent_log ORDER BY id DESC LIMIT " + Math.max(1, Math.min(limit, 500)),
++                (rs, i) -> new AgentLog(
++                        rs.getLong("id"),
++                        rs.getLong("created_at"),
++                        nullableLong(rs, "strategy_id"),
++                        rs.getString("level"),
++                        rs.getString("message")));
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/store/StrategyRepository.java b/backend/src/main/java/com/lhk/upbitagent/store/StrategyRepository.java
+new file mode 100644
+index 0000000..14b2d7e
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/store/StrategyRepository.java
+@@ -0,0 +1,138 @@
++package com.lhk.upbitagent.store;
++
++import com.fasterxml.jackson.core.JsonProcessingException;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.lhk.upbitagent.agent.Strategy;
++import com.lhk.upbitagent.agent.TradeMode;
++import com.lhk.upbitagent.screener.ScreenerCondition;
++import org.springframework.jdbc.core.RowMapper;
++import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
++import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
++import org.springframework.jdbc.support.GeneratedKeyHolder;
++import org.springframework.jdbc.support.KeyHolder;
++import org.springframework.stereotype.Repository;
++
++import java.sql.ResultSet;
++import java.sql.SQLException;
++import java.util.List;
++import java.util.Optional;
++
++@Repository
++public class StrategyRepository {
++
++    private final NamedParameterJdbcTemplate jdbc;
++    private final ObjectMapper objectMapper;
++
++    public StrategyRepository(NamedParameterJdbcTemplate jdbc, ObjectMapper objectMapper) {
++        this.jdbc = jdbc;
++        this.objectMapper = objectMapper;
++    }
++
++    public List<Strategy> findAll() {
++        return jdbc.query("SELECT * FROM strategy WHERE deleted = FALSE ORDER BY id DESC", mapper());
++    }
++
++    public Optional<Strategy> findById(long id) {
++        return jdbc.query("SELECT * FROM strategy WHERE id = :id AND deleted = FALSE",
++                new MapSqlParameterSource("id", id), mapper()).stream().findFirst();
++    }
++
++    public Strategy insert(Strategy s) {
++        KeyHolder key = new GeneratedKeyHolder();
++        jdbc.update("""
++                INSERT INTO strategy (name, condition_json, natural_text, order_krw, max_positions, take_profit_pct, stop_loss_pct,
++                                      trailing_stop_pct, max_hold_hours, daily_loss_limit_krw, mode, enabled, created_at)
++                VALUES (:name, :conditionJson, :naturalText, :orderKrw, :maxPositions, :takeProfitPct, :stopLossPct,
++                        :trailingStopPct, :maxHoldHours, :dailyLossLimitKrw, :mode, :enabled, :createdAt)
++                """, params(s), key, new String[]{"id"});
++        return findById(key.getKey().longValue()).orElseThrow();
++    }
++
++    public void update(Strategy s) {
++        jdbc.update("""
++                UPDATE strategy
++                   SET name = :name, condition_json = :conditionJson, natural_text = :naturalText, order_krw = :orderKrw,
++                       max_positions = :maxPositions, take_profit_pct = :takeProfitPct, stop_loss_pct = :stopLossPct,
++                       trailing_stop_pct = :trailingStopPct, max_hold_hours = :maxHoldHours,
++                       daily_loss_limit_krw = :dailyLossLimitKrw, mode = :mode, enabled = :enabled
++                 WHERE id = :id
++                """, params(s).addValue("id", s.id()));
++    }
++
++    public void setEnabled(long id, boolean enabled) {
++        jdbc.update("UPDATE strategy SET enabled = :enabled WHERE id = :id",
++                new MapSqlParameterSource("id", id).addValue("enabled", enabled));
++    }
++
++    /** 거래 기록이 전략을 참조하므로 실제로 지우지 않고 숨긴다 */
++    public void softDelete(long id) {
++        jdbc.update("UPDATE strategy SET deleted = TRUE, enabled = FALSE WHERE id = :id",
++                new MapSqlParameterSource("id", id));
++    }
++
++    private MapSqlParameterSource params(Strategy s) {
++        return new MapSqlParameterSource()
++                .addValue("name", s.name())
++                .addValue("conditionJson", toJson(s.condition()))
++                .addValue("naturalText", s.naturalText())
++                .addValue("orderKrw", s.orderKrw())
++                .addValue("maxPositions", s.maxPositions())
++                .addValue("takeProfitPct", s.takeProfitPct())
++                .addValue("stopLossPct", s.stopLossPct())
++                .addValue("trailingStopPct", s.trailingStopPct())
++                .addValue("maxHoldHours", s.maxHoldHours())
++                .addValue("dailyLossLimitKrw", s.dailyLossLimitKrw())
++                .addValue("mode", s.mode().name())
++                .addValue("enabled", s.enabled())
++                .addValue("createdAt", s.createdAt());
++    }
++
++    private RowMapper<Strategy> mapper() {
++        return (rs, i) -> new Strategy(
++                rs.getLong("id"),
++                rs.getString("name"),
++                fromJson(rs.getString("condition_json")),
++                rs.getString("natural_text"),
++                rs.getDouble("order_krw"),
++                rs.getInt("max_positions"),
++                nullableDouble(rs, "take_profit_pct"),
++                nullableDouble(rs, "stop_loss_pct"),
++                nullableDouble(rs, "trailing_stop_pct"),
++                nullableInt(rs, "max_hold_hours"),
++                nullableDouble(rs, "daily_loss_limit_krw"),
++                TradeMode.valueOf(rs.getString("mode")),
++                rs.getBoolean("enabled"),
++                rs.getLong("created_at"));
++    }
++
++    private String toJson(ScreenerCondition c) {
++        try {
++            return objectMapper.writeValueAsString(c);
++        } catch (JsonProcessingException e) {
++            throw new IllegalArgumentException("조건을 JSON 으로 바꾸지 못했어요", e);
++        }
++    }
++
++    private ScreenerCondition fromJson(String json) {
++        try {
++            return objectMapper.readValue(json, ScreenerCondition.class);
++        } catch (JsonProcessingException e) {
++            throw new IllegalStateException("저장된 조건 JSON 을 읽지 못했어요: " + json, e);
++        }
++    }
++
++    static Double nullableDouble(ResultSet rs, String col) throws SQLException {
++        double v = rs.getDouble(col);
++        return rs.wasNull() ? null : v;
++    }
++
++    static Integer nullableInt(ResultSet rs, String col) throws SQLException {
++        int v = rs.getInt(col);
++        return rs.wasNull() ? null : v;
++    }
++
++    static Long nullableLong(ResultSet rs, String col) throws SQLException {
++        long v = rs.getLong(col);
++        return rs.wasNull() ? null : v;
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/store/TradeRepository.java b/backend/src/main/java/com/lhk/upbitagent/store/TradeRepository.java
+new file mode 100644
+index 0000000..8f49593
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/store/TradeRepository.java
+@@ -0,0 +1,194 @@
++package com.lhk.upbitagent.store;
++
++import com.lhk.upbitagent.agent.Trade;
++import com.lhk.upbitagent.agent.TradeMode;
++import com.lhk.upbitagent.agent.TradeStatus;
++import org.springframework.jdbc.core.RowMapper;
++import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
++import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
++import org.springframework.jdbc.support.GeneratedKeyHolder;
++import org.springframework.jdbc.support.KeyHolder;
++import org.springframework.stereotype.Repository;
++
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Optional;
++import java.util.Set;
++
++import static com.lhk.upbitagent.store.StrategyRepository.nullableDouble;
++import static com.lhk.upbitagent.store.StrategyRepository.nullableLong;
++
++@Repository
++public class TradeRepository {
++
++    private static final String SELECT = """
++            SELECT t.*, s.name AS strategy_name
++              FROM trade t
++              LEFT JOIN strategy s ON s.id = t.strategy_id
++            """;
++
++    /** 화면 정렬 키 → 컬럼 (SQL 인젝션 방지용 화이트리스트) */
++    private static final Map<String, String> SORT_COLUMNS = Map.of(
++            "buyAt", "t.buy_at",
++            "sellAt", "t.sell_at",
++            "pnlRate", "t.pnl_rate",
++            "pnl", "t.pnl",
++            "market", "t.korean_name",
++            "buyPrice", "t.buy_price",
++            "sellPrice", "t.sell_price");
++
++    private final NamedParameterJdbcTemplate jdbc;
++
++    public TradeRepository(NamedParameterJdbcTemplate jdbc) {
++        this.jdbc = jdbc;
++    }
++
++    public long insert(Trade t) {
++        KeyHolder key = new GeneratedKeyHolder();
++        jdbc.update("""
++                INSERT INTO trade (strategy_id, market, korean_name, status, mode, buy_price, quantity,
++                                   buy_amount, buy_fee, buy_at, highest_price)
++                VALUES (:strategyId, :market, :koreanName, :status, :mode, :buyPrice, :quantity,
++                        :buyAmount, :buyFee, :buyAt, :highestPrice)
++                """, new MapSqlParameterSource()
++                .addValue("strategyId", t.strategyId())
++                .addValue("market", t.market())
++                .addValue("koreanName", t.koreanName())
++                .addValue("status", t.status().name())
++                .addValue("mode", t.mode().name())
++                .addValue("buyPrice", t.buyPrice())
++                .addValue("quantity", t.quantity())
++                .addValue("buyAmount", t.buyAmount())
++                .addValue("buyFee", t.buyFee())
++                .addValue("buyAt", t.buyAt())
++                .addValue("highestPrice", t.highestPrice()), key, new String[]{"id"});
++        return key.getKey().longValue();
++    }
++
++    /** 매도 체결 반영. 이미 닫힌 거래는 건드리지 않는다(중복 매도 방지) */
++    public boolean close(Trade t) {
++        int updated = jdbc.update("""
++                UPDATE trade
++                   SET status = 'CLOSED', sell_price = :sellPrice, sell_amount = :sellAmount, sell_fee = :sellFee,
++                       sell_at = :sellAt, sell_reason = :sellReason, pnl = :pnl, pnl_rate = :pnlRate
++                 WHERE id = :id AND status = 'OPEN'
++                """, new MapSqlParameterSource()
++                .addValue("id", t.id())
++                .addValue("sellPrice", t.sellPrice())
++                .addValue("sellAmount", t.sellAmount())
++                .addValue("sellFee", t.sellFee())
++                .addValue("sellAt", t.sellAt())
++                .addValue("sellReason", t.sellReason())
++                .addValue("pnl", t.pnl())
++                .addValue("pnlRate", t.pnlRate()));
++        return updated == 1;
++    }
++
++    public void updateHighest(long id, double highest) {
++        jdbc.update("UPDATE trade SET highest_price = :h WHERE id = :id AND status = 'OPEN'",
++                new MapSqlParameterSource("id", id).addValue("h", highest));
++    }
++
++    public Optional<Trade> findById(long id) {
++        return jdbc.query(SELECT + " WHERE t.id = :id", new MapSqlParameterSource("id", id), mapper())
++                .stream().findFirst();
++    }
++
++    public List<Trade> findOpen() {
++        return jdbc.query(SELECT + " WHERE t.status = 'OPEN' ORDER BY t.buy_at DESC", mapper());
++    }
++
++    public List<Trade> findOpenByStrategy(long strategyId) {
++        return jdbc.query(SELECT + " WHERE t.status = 'OPEN' AND t.strategy_id = :sid ORDER BY t.buy_at",
++                new MapSqlParameterSource("sid", strategyId), mapper());
++    }
++
++    /** 투자 히스토리 조회 */
++    public List<Trade> search(TradeSearch q) {
++        StringBuilder sql = new StringBuilder(SELECT).append(" WHERE 1 = 1");
++        MapSqlParameterSource p = new MapSqlParameterSource();
++
++        if (q.status() != null) {
++            sql.append(" AND t.status = :status");
++            p.addValue("status", q.status().name());
++        }
++        if (q.strategyId() != null) {
++            sql.append(" AND t.strategy_id = :sid");
++            p.addValue("sid", q.strategyId());
++        }
++        if (q.from() != null) {
++            sql.append(" AND t.buy_at >= :from");
++            p.addValue("from", q.from());
++        }
++        if (q.to() != null) {
++            sql.append(" AND t.buy_at < :to");
++            p.addValue("to", q.to());
++        }
++
++        String column = SORT_COLUMNS.getOrDefault(q.sort(), "t.buy_at");
++        String dir = "asc".equalsIgnoreCase(q.dir()) ? "ASC" : "DESC";
++        // 진행 중 거래는 매도 관련 값이 NULL 이라 정렬 시 항상 뒤로 보낸다
++        sql.append(" ORDER BY CASE WHEN ").append(column).append(" IS NULL THEN 1 ELSE 0 END, ")
++                .append(column).append(' ').append(dir).append(", t.id DESC");
++        sql.append(" LIMIT ").append(Math.max(1, Math.min(q.limit(), 1000)));
++
++        return jdbc.query(sql.toString(), p, mapper());
++    }
++
++    /** since 이후 매도된 거래의 실현손익 합계 */
++    public double realizedPnlSince(Long strategyId, long since) {
++        String sql = "SELECT COALESCE(SUM(pnl), 0) FROM trade WHERE status = 'CLOSED' AND sell_at >= :since"
++                + (strategyId == null ? "" : " AND strategy_id = :sid");
++        Double v = jdbc.queryForObject(sql,
++                new MapSqlParameterSource("since", since).addValue("sid", strategyId), Double.class);
++        return v == null ? 0 : v;
++    }
++
++    /** since 이후 매도한 종목 (재진입 대기용) */
++    public Set<String> soldMarketsSince(long strategyId, long since) {
++        return new HashSet<>(jdbc.queryForList(
++                "SELECT DISTINCT market FROM trade WHERE strategy_id = :sid AND status = 'CLOSED' AND sell_at >= :since",
++                new MapSqlParameterSource("sid", strategyId).addValue("since", since), String.class));
++    }
++
++    /** 완료 거래 통계: 건수, 이긴 건수, 실현손익 합계, 총 매수비용 */
++    public Map<String, Object> closedStats() {
++        return jdbc.queryForMap("""
++                SELECT COUNT(*)                                       AS closed_count,
++                       COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS win_count,
++                       COALESCE(SUM(pnl), 0)                          AS realized_pnl,
++                       COALESCE(SUM(buy_amount + buy_fee), 0)         AS total_cost
++                  FROM trade
++                 WHERE status = 'CLOSED'
++                """, new MapSqlParameterSource());
++    }
++
++    public record TradeSearch(TradeStatus status, Long strategyId, Long from, Long to,
++                              String sort, String dir, int limit) {
++    }
++
++    private RowMapper<Trade> mapper() {
++        return (rs, i) -> new Trade(
++                rs.getLong("id"),
++                rs.getLong("strategy_id"),
++                rs.getString("strategy_name"),
++                rs.getString("market"),
++                rs.getString("korean_name"),
++                TradeStatus.valueOf(rs.getString("status")),
++                TradeMode.valueOf(rs.getString("mode")),
++                rs.getDouble("buy_price"),
++                rs.getDouble("quantity"),
++                rs.getDouble("buy_amount"),
++                rs.getDouble("buy_fee"),
++                rs.getLong("buy_at"),
++                rs.getDouble("highest_price"),
++                nullableDouble(rs, "sell_price"),
++                nullableDouble(rs, "sell_amount"),
++                nullableDouble(rs, "sell_fee"),
++                nullableLong(rs, "sell_at"),
++                rs.getString("sell_reason"),
++                nullableDouble(rs, "pnl"),
++                nullableDouble(rs, "pnl_rate"));
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/web/AgentController.java b/backend/src/main/java/com/lhk/upbitagent/web/AgentController.java
+new file mode 100644
+index 0000000..8885593
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/web/AgentController.java
+@@ -0,0 +1,164 @@
++package com.lhk.upbitagent.web;
++
++import com.lhk.upbitagent.agent.AgentService;
++import com.lhk.upbitagent.agent.Strategy;
++import com.lhk.upbitagent.agent.StrategyRequest;
++import com.lhk.upbitagent.agent.Trade;
++import com.lhk.upbitagent.agent.TradeStatus;
++import com.lhk.upbitagent.store.AgentLogRepository;
++import com.lhk.upbitagent.store.StrategyRepository;
++import com.lhk.upbitagent.store.TradeRepository;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.DeleteMapping;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RequestParam;
++import org.springframework.web.bind.annotation.RestController;
++
++import java.util.List;
++import java.util.Map;
++
++@RestController
++@RequestMapping("/api")
++public class AgentController {
++
++    private final StrategyRepository strategies;
++    private final TradeRepository trades;
++    private final AgentLogRepository logs;
++    private final AgentService agent;
++
++    public AgentController(StrategyRepository strategies, TradeRepository trades,
++                           AgentLogRepository logs, AgentService agent) {
++        this.strategies = strategies;
++        this.trades = trades;
++        this.logs = logs;
++        this.agent = agent;
++    }
++
++    // ---------- 전략 ----------
++
++    @GetMapping("/strategies")
++    public List<Strategy> listStrategies() {
++        return strategies.findAll();
++    }
++
++    /** 전략 저장 (기본: 바로 시작). 저장 직후 한 주기를 돌려 첫 매수를 바로 확인할 수 있게 한다 */
++    @PostMapping("/strategies")
++    public Strategy createStrategy(@RequestBody StrategyRequest req) {
++        Strategy saved = strategies.insert(req.toStrategy(null, System.currentTimeMillis()));
++        logs.add(saved.id(), "INFO", "[" + saved.name() + "] 전략 저장" + (saved.enabled() ? " · 시작" : ""));
++        if (saved.enabled()) {
++            agent.runCycle();
++        }
++        return saved;
++    }
++
++    @PutMapping("/strategies/{id}")
++    public Strategy updateStrategy(@PathVariable long id, @RequestBody StrategyRequest req) {
++        Strategy old = findStrategy(id);
++        strategies.update(req.toStrategy(id, old.createdAt()));
++        logs.add(id, "INFO", "[" + req.name() + "] 전략 수정");
++        return findStrategy(id);
++    }
++
++    @PostMapping("/strategies/{id}/start")
++    public Strategy start(@PathVariable long id) {
++        Strategy s = findStrategy(id);
++        strategies.setEnabled(id, true);
++        logs.add(id, "INFO", "[" + s.name() + "] 시작");
++        agent.runCycle();
++        return findStrategy(id);
++    }
++
++    /** 정지: 신규 매수만 멈추고, 보유 중인 종목은 매도 규칙대로 계속 관리 */
++    @PostMapping("/strategies/{id}/stop")
++    public Strategy stop(@PathVariable long id) {
++        Strategy s = findStrategy(id);
++        strategies.setEnabled(id, false);
++        logs.add(id, "INFO", "[" + s.name() + "] 정지 (보유 종목은 매도 규칙대로 계속 관리)");
++        return findStrategy(id);
++    }
++
++    @DeleteMapping("/strategies/{id}")
++    public ResponseEntity<Void> delete(@PathVariable long id) {
++        Strategy s = findStrategy(id);
++        if (!trades.findOpenByStrategy(id).isEmpty()) {
++            throw new IllegalArgumentException("보유 중인 종목이 있어 삭제할 수 없어요. 먼저 매도하거나 정지 후 정리해주세요.");
++        }
++        strategies.softDelete(id);
++        logs.add(id, "INFO", "[" + s.name() + "] 삭제");
++        return ResponseEntity.noContent().build();
++    }
++
++    // ---------- 포지션·거래 ----------
++
++    /** 진행 중 거래 + 현재가 기준 평가손익 */
++    @GetMapping("/positions")
++    public List<AgentService.Position> positions() {
++        return agent.positions();
++    }
++
++    /** 수동 매도 */
++    @PostMapping("/trades/{id}/close")
++    public Trade close(@PathVariable long id) {
++        return agent.closeManually(id);
++    }
++
++    /**
++     * 투자 히스토리.
++     * status: OPEN | CLOSED | (생략=전체), sort: buyAt | sellAt | pnlRate | pnl | market | buyPrice | sellPrice
++     * from/to: 매수 시각 범위(epoch ms)
++     */
++    @GetMapping("/trades")
++    public List<Trade> trades(@RequestParam(required = false) TradeStatus status,
++                              @RequestParam(required = false) Long strategyId,
++                              @RequestParam(required = false) Long from,
++                              @RequestParam(required = false) Long to,
++                              @RequestParam(defaultValue = "buyAt") String sort,
++                              @RequestParam(defaultValue = "desc") String dir,
++                              @RequestParam(defaultValue = "300") int limit) {
++        return trades.search(new TradeRepository.TradeSearch(status, strategyId, from, to, sort, dir, limit));
++    }
++
++    // ---------- 에이전트 ----------
++
++    @GetMapping("/agent/summary")
++    public AgentService.Summary summary() {
++        return agent.summary();
++    }
++
++    @GetMapping("/agent/logs")
++    public List<AgentLogRepository.AgentLog> agentLogs(@RequestParam(defaultValue = "50") int limit) {
++        return logs.recent(limit);
++    }
++
++    /** 다음 주기를 기다리지 않고 바로 한 번 실행 (테스트용) */
++    @PostMapping("/agent/run")
++    public Map<String, String> runNow() {
++        agent.runCycle();
++        return Map.of("message", "한 주기를 실행했어요");
++    }
++
++    // ---------- 에러 ----------
++
++    private Strategy findStrategy(long id) {
++        return strategies.findById(id)
++                .orElseThrow(() -> new IllegalArgumentException("전략을 찾을 수 없어요: " + id));
++    }
++
++    @ExceptionHandler(IllegalArgumentException.class)
++    public ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException e) {
++        return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
++    }
++
++    @ExceptionHandler(IllegalStateException.class)
++    public ResponseEntity<Map<String, String>> conflict(IllegalStateException e) {
++        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", e.getMessage()));
++    }
++}
+diff --git a/backend/src/main/resources/application.yml b/backend/src/main/resources/application.yml
+index 9d57579..04b910d 100644
+--- a/backend/src/main/resources/application.yml
++++ b/backend/src/main/resources/application.yml
+@@ -7,8 +7,20 @@ spring:
+   task:
+     scheduling:
+       pool:
+-        # 현재가 갱신과 캔들 수집이 서로 막지 않도록 2개
+-        size: 2
++        # 현재가 갱신 / 캔들 수집 / 에이전트가 서로 막지 않도록 3개
++        size: 3
++
++  # 개발용 H2 파일 DB → backend/data/upbit-agent.mv.db 에 저장 (서버를 꺼도 유지)
++  datasource:
++    url: jdbc:h2:file:./data/upbit-agent;MODE=MySQL;AUTO_SERVER=TRUE
++    username: sa
++    password:
++  sql:
++    init:
++      mode: always   # 시작할 때 schema.sql 실행 (CREATE TABLE IF NOT EXISTS)
++  h2:
++    console:
++      enabled: true  # http://localhost:8080/h2-console (JDBC URL 은 위 url 그대로)
+ 
+ collector:
+   # 캔들 요청 사이 간격(ms). 업비트 시세 API 초당 요청 제한을 넘지 않게 유지
+@@ -18,6 +30,16 @@ collector:
+   # 종목당 가져올 캔들 수 (업비트 최대 200)
+   candle-count: 200
+ 
++agent:
++  # 에이전트 판단 주기(ms)
++  cycle-ms: 60000
++  # 업비트 KRW 마켓 수수료 0.05%
++  fee-rate: 0.0005
++  # 모의 체결가를 불리하게 조정 (매수 +0.1%, 매도 -0.1%) — 실제보다 낙관적인 결과를 막기 위함
++  paper-slippage: 0.001
++  # 매도한 종목은 이 시간(분) 동안 다시 사지 않음 (같은 종목 반복 매매 방지)
++  reentry-cooldown-minutes: 60
++
+ # 자연어 검색 (Claude API)
+ anthropic:
+   # 키는 절대 이 파일에 직접 쓰지 말고 환경변수로 넣기 → ANTHROPIC_API_KEY
+diff --git a/backend/src/main/resources/schema.sql b/backend/src/main/resources/schema.sql
+new file mode 100644
+index 0000000..4403e22
+--- /dev/null
++++ b/backend/src/main/resources/schema.sql
+@@ -0,0 +1,53 @@
++-- H2(MySQL 모드)와 MariaDB 에서 모두 동작하도록 작성
++-- 시각은 epoch 밀리초(BIGINT), 퍼센트는 % 단위
++
++CREATE TABLE IF NOT EXISTS strategy (
++    id                   BIGINT AUTO_INCREMENT PRIMARY KEY,
++    name                 VARCHAR(100)  NOT NULL,
++    condition_json       VARCHAR(4000) NOT NULL,   -- 조건 검색 조건 (ScreenerCondition JSON)
++    natural_text         VARCHAR(500),             -- 자연어로 입력한 원문
++    order_krw            DOUBLE        NOT NULL,   -- 1회 매수 금액
++    max_positions        INT           NOT NULL,
++    take_profit_pct      DOUBLE,
++    stop_loss_pct        DOUBLE,
++    trailing_stop_pct    DOUBLE,
++    max_hold_hours       INT,
++    daily_loss_limit_krw DOUBLE,
++    mode                 VARCHAR(10)   NOT NULL,   -- PAPER / LIVE
++    enabled              BOOLEAN       NOT NULL,
++    deleted              BOOLEAN       NOT NULL DEFAULT FALSE,
++    created_at           BIGINT        NOT NULL
++);
++
++CREATE TABLE IF NOT EXISTS trade (
++    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
++    strategy_id   BIGINT       NOT NULL,
++    market        VARCHAR(20)  NOT NULL,
++    korean_name   VARCHAR(100),
++    status        VARCHAR(10)  NOT NULL,   -- OPEN / CLOSED
++    mode          VARCHAR(10)  NOT NULL,
++    buy_price     DOUBLE       NOT NULL,
++    quantity      DOUBLE       NOT NULL,
++    buy_amount    DOUBLE       NOT NULL,
++    buy_fee       DOUBLE       NOT NULL,
++    buy_at        BIGINT       NOT NULL,
++    highest_price DOUBLE       NOT NULL,
++    sell_price    DOUBLE,
++    sell_amount   DOUBLE,
++    sell_fee      DOUBLE,
++    sell_at       BIGINT,
++    sell_reason   VARCHAR(100),
++    pnl           DOUBLE,
++    pnl_rate      DOUBLE
++);
++
++CREATE INDEX IF NOT EXISTS idx_trade_status ON trade (status);
++CREATE INDEX IF NOT EXISTS idx_trade_strategy ON trade (strategy_id);
++
++CREATE TABLE IF NOT EXISTS agent_log (
++    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
++    created_at  BIGINT        NOT NULL,
++    strategy_id BIGINT,
++    level       VARCHAR(10)   NOT NULL,   -- INFO / BUY / SELL / WARN
++    message     VARCHAR(500)  NOT NULL
++);
+diff --git a/backend/src/test/java/com/lhk/upbitagent/agent/AgentEngineTest.java b/backend/src/test/java/com/lhk/upbitagent/agent/AgentEngineTest.java
+new file mode 100644
+index 0000000..d3b7362
+--- /dev/null
++++ b/backend/src/test/java/com/lhk/upbitagent/agent/AgentEngineTest.java
+@@ -0,0 +1,177 @@
++package com.lhk.upbitagent.agent;
++
++import com.lhk.upbitagent.screener.ScreenerResult;
++import org.junit.jupiter.api.Test;
++
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class AgentEngineTest {
++
++    private static final long HOUR = 3_600_000L;
++    private static final long NOW = 100 * HOUR;
++
++    /** 수수료·슬리피지 0 으로 두면 계산을 눈으로 확인하기 쉽다 */
++    private final AgentEngine engine = new AgentEngine(new AgentEngine.Config(0, 0));
++
++    private static Strategy strategy(int maxPositions, Double tp, Double sl, Double trail, Integer hold, Double dailyLimit) {
++        return new Strategy(1L, "테스트", null, null, 100_000, maxPositions, tp, sl, trail, hold, dailyLimit,
++                TradeMode.PAPER, true, 0L);
++    }
++
++    private static Trade open(long id, String market, double buyPrice, double highest, long buyAt) {
++        return new Trade(id, 1L, "테스트", market, market, TradeStatus.OPEN, TradeMode.PAPER,
++                buyPrice, 1, buyPrice, 0, buyAt, highest,
++                null, null, null, null, null, null, null);
++    }
++
++    private static ScreenerResult.Item item(String market, double price) {
++        return new ScreenerResult.Item(market, market, price, 0, 1e10, null, null, null, null, List.of());
++    }
++
++    // ---------- 매도 규칙 ----------
++
++    @Test
++    void 손절() {
++        Strategy s = strategy(3, 5.0, 3.0, null, null, null);
++        var d = engine.decide(s, List.of(open(1, "KRW-A", 100, 100, NOW)), Map.of("KRW-A", 96.9),
++                List.of(), 0, Set.of(), NOW);
++        assertEquals(1, d.sells().size());
++        assertTrue(d.sells().get(0).reason().startsWith("손절"));
++    }
++
++    @Test
++    void 익절() {
++        Strategy s = strategy(3, 5.0, 3.0, null, null, null);
++        var d = engine.decide(s, List.of(open(1, "KRW-A", 100, 100, NOW)), Map.of("KRW-A", 105.0),
++                List.of(), 0, Set.of(), NOW);
++        assertTrue(d.sells().get(0).reason().startsWith("익절"));
++    }
++
++    @Test
++    void 규칙_범위_안이면_보유() {
++        Strategy s = strategy(3, 5.0, 3.0, null, null, null);
++        var d = engine.decide(s, List.of(open(1, "KRW-A", 100, 100, NOW)), Map.of("KRW-A", 102.0),
++                List.of(), 0, Set.of(), NOW);
++        assertEquals(0, d.sells().size());
++    }
++
++    @Test
++    void 트레일링은_수익구간에서만_작동() {
++        Strategy s = strategy(3, null, null, 2.0, null, null);
++        // 최고가 110 → 현재 107.5 (최고가 대비 -2.27%) → 매도
++        var d1 = engine.decide(s, List.of(open(1, "KRW-A", 100, 110, NOW)), Map.of("KRW-A", 107.5),
++                List.of(), 0, Set.of(), NOW);
++        assertTrue(d1.sells().get(0).reason().startsWith("트레일링"));
++
++        // 한 번도 매수가를 넘지 못한 경우(최고가 = 매수가)는 트레일링 대상 아님
++        var d2 = engine.decide(s, List.of(open(1, "KRW-A", 100, 100, NOW)), Map.of("KRW-A", 97.0),
++                List.of(), 0, Set.of(), NOW);
++        assertEquals(0, d2.sells().size());
++    }
++
++    @Test
++    void 최고가_갱신() {
++        Strategy s = strategy(3, null, null, 2.0, null, null);
++        var d = engine.decide(s, List.of(open(7, "KRW-A", 100, 103, NOW)), Map.of("KRW-A", 104.0),
++                List.of(), 0, Set.of(), NOW);
++        assertEquals(1, d.highs().size());
++        assertEquals(104.0, d.highs().get(0).highestPrice(), 1e-9);
++        assertEquals(0, d.sells().size());
++    }
++
++    @Test
++    void 보유시간_초과() {
++        Strategy s = strategy(3, null, null, null, 24, null);
++        var d = engine.decide(s, List.of(open(1, "KRW-A", 100, 100, NOW - 25 * HOUR)), Map.of("KRW-A", 100.0),
++                List.of(), 0, Set.of(), NOW);
++        assertTrue(d.sells().get(0).reason().startsWith("보유시간"));
++    }
++
++    @Test
++    void 현재가_없으면_판단_보류() {
++        Strategy s = strategy(3, 5.0, 3.0, null, null, null);
++        var d = engine.decide(s, List.of(open(1, "KRW-A", 100, 100, NOW)), Map.of(),
++                List.of(), 0, Set.of(), NOW);
++        assertEquals(0, d.sells().size());
++    }
++
++    // ---------- 매수 ----------
++
++    @Test
++    void 빈자리만큼만_매수하고_보유중_재진입대기_종목은_제외() {
++        Strategy s = strategy(3, null, null, null, null, null);
++        List<Trade> holding = List.of(open(1, "KRW-A", 100, 100, NOW));
++        List<ScreenerResult.Item> cands = List.of(
++                item("KRW-A", 100),  // 보유 중
++                item("KRW-B", 100),  // 재진입 대기
++                item("KRW-C", 100),
++                item("KRW-D", 100),
++                item("KRW-E", 100)); // 자리 없음
++
++        var d = engine.decide(s, holding, Map.of("KRW-A", 100.0), cands, 0, Set.of("KRW-B"), NOW);
++        assertEquals(List.of("KRW-C", "KRW-D"), d.buys().stream().map(AgentEngine.BuyOrder::market).toList());
++    }
++
++    @Test
++    void 매도한_자리는_같은_주기에_다시_채우되_같은_종목은_안산다() {
++        Strategy s = strategy(1, 5.0, null, null, null, null);
++        List<Trade> holding = List.of(open(1, "KRW-A", 100, 100, NOW));
++        var d = engine.decide(s, holding, Map.of("KRW-A", 106.0),
++                List.of(item("KRW-A", 106), item("KRW-B", 50)), 0, Set.of(), NOW);
++        assertEquals(1, d.sells().size());
++        assertEquals(List.of("KRW-B"), d.buys().stream().map(AgentEngine.BuyOrder::market).toList());
++    }
++
++    @Test
++    void 일일손실한도_도달시_매수중단() {
++        Strategy s = strategy(3, null, null, null, null, 30_000.0);
++        var d = engine.decide(s, List.of(), Map.of(), List.of(item("KRW-A", 100)), -30_000, Set.of(), NOW);
++        assertEquals(0, d.buys().size());
++        assertEquals(1, d.notes().size());
++    }
++
++    @Test
++    void 정지된_전략은_매도만() {
++        Strategy on = strategy(3, 5.0, null, null, null, null);
++        Strategy off = new Strategy(1L, "x", null, null, 100_000, 3, 5.0, null, null, null, null,
++                TradeMode.PAPER, false, 0L);
++        var d = engine.decide(off, List.of(open(1, "KRW-A", 100, 100, NOW)), Map.of("KRW-A", 106.0),
++                List.of(item("KRW-B", 100)), 0, Set.of(), NOW);
++        assertEquals(1, d.sells().size());
++        assertEquals(0, d.buys().size());
++        assertEquals(1, engine.decide(on, List.of(), Map.of(), List.of(item("KRW-B", 100)), 0, Set.of(), NOW).buys().size());
++    }
++
++    @Test
++    void 데이터_수집중이면_매수판단_안함() {
++        Strategy s = strategy(3, null, null, null, null, null);
++        var d = engine.decide(s, List.of(), Map.of(), null, 0, Set.of(), NOW);
++        assertEquals(0, d.buys().size());
++        assertEquals(1, d.notes().size());
++    }
++
++    // ---------- 체결 계산 ----------
++
++    @Test
++    void 수수료와_슬리피지를_반영한_손익() {
++        AgentEngine real = new AgentEngine(new AgentEngine.Config(0.0005, 0.001));
++        Strategy s = strategy(3, null, null, null, null, null);
++
++        Trade bought = real.openTrade(s, new AgentEngine.BuyOrder("KRW-A", "A", 1000), NOW);
++        assertEquals(1001.0, bought.buyPrice(), 1e-9);                   // 0.1% 불리하게 체결
++        assertEquals(100_000.0, bought.cost(), 1e-6);                    // 수수료 포함 주문금액 그대로
++        assertNull(bought.sellPrice());
++
++        Trade sold = real.closeTrade(bought, 1000, "테스트", NOW + HOUR);
++        // 가격이 그대로여도 수수료 2번 + 슬리피지 2번만큼 손실
++        assertTrue(sold.pnl() < 0);
++        assertEquals(-0.2995, sold.pnlRate(), 1e-3);
++        assertEquals(TradeStatus.CLOSED, sold.status());
++    }
++}
+diff --git a/backend/src/test/java/com/lhk/upbitagent/agent/StrategyRequestTest.java b/backend/src/test/java/com/lhk/upbitagent/agent/StrategyRequestTest.java
+new file mode 100644
+index 0000000..8828c0b
+--- /dev/null
++++ b/backend/src/test/java/com/lhk/upbitagent/agent/StrategyRequestTest.java
+@@ -0,0 +1,62 @@
++package com.lhk.upbitagent.agent;
++
++import com.lhk.upbitagent.domain.CandleUnit;
++import com.lhk.upbitagent.screener.ScreenerCondition;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class StrategyRequestTest {
++
++    private static final ScreenerCondition COND = new ScreenerCondition(CandleUnit.MIN60, null, null, null, null,
++            null, true, null, null, null, null, null, null, null, null, null, null, null, null, null, 10);
++
++    private static String errorOf(StrategyRequest r) {
++        try {
++            r.toStrategy(null, 0);
++            return null;
++        } catch (IllegalArgumentException e) {
++            return e.getMessage();
++        }
++    }
++
++    @Test
++    void 정상_요청은_모의매매_전략으로_변환() {
++        StrategyRequest r = new StrategyRequest("  눌림목  ", COND, " 일봉 눌림목 ", 100_000.0, 3,
++                5.0, 3.0, null, null, 30_000.0, null);
++        Strategy s = r.toStrategy(7L, 123L);
++        assertEquals("눌림목", s.name());
++        assertEquals("일봉 눌림목", s.naturalText());
++        assertEquals(TradeMode.PAPER, s.mode());
++        assertTrue(s.enabled());
++        assertEquals(7L, s.id().longValue());
++    }
++
++    @Test
++    void 최소_주문금액_미만이면_거절() {
++        String err = errorOf(new StrategyRequest("a", COND, null, 4_000.0, 3, 5.0, 3.0, null, null, null, true));
++        assertTrue(err != null && err.contains("5,000원"), err);
++    }
++
++    @Test
++    void 매도규칙이_하나도_없으면_거절() {
++        String err = errorOf(new StrategyRequest("a", COND, null, 10_000.0, 3, null, null, null, null, null, true));
++        assertTrue(err != null && err.contains("매도 규칙"), err);
++    }
++
++    @Test
++    void 최대보유수_범위와_음수_퍼센트_검사() {
++        String err = errorOf(new StrategyRequest("a", COND, null, 10_000.0, 11, -1.0, 3.0, null, null, null, true));
++        assertTrue(err.contains("최대 보유 종목 수"), err);
++        assertTrue(err.contains("익절 %"), err);
++    }
++
++    @Test
++    void 이름이_비면_기본이름() {
++        Strategy s = new StrategyRequest(" ", COND, null, 10_000.0, 1, null, null, null, 24, null, false)
++                .toStrategy(3L, 0);
++        assertEquals("전략 3", s.name());
++        assertTrue(!s.enabled());
++    }
++}
+diff --git a/frontend/src/App.vue b/frontend/src/App.vue
+index a07b21a..d253131 100644
+--- a/frontend/src/App.vue
++++ b/frontend/src/App.vue
+@@ -67,6 +67,10 @@ body {
+ #app {
+   background-color: #0d1117;
+   min-height: 100vh;
++  /* 템플릿 기본(style.css)의 1126px 고정 폭을 풀어 표가 잘리지 않게 */
++  width: 100%;
++  max-width: 1600px;
++  border-inline: none;
+ }
+ 
+ .app-container {
+diff --git a/frontend/src/api/backendApi.js b/frontend/src/api/backendApi.js
+index 30a354f..4500947 100644
+--- a/frontend/src/api/backendApi.js
++++ b/frontend/src/api/backendApi.js
+@@ -19,4 +19,25 @@ export const parseStatus = () =>
+ export const collectorStatus = () =>
+   backend.get('/collector/status').then(res => res.data);
+ 
++// ---------- 전략 ----------
++const data = (res) => res.data;
++
++export const listStrategies = () => backend.get('/strategies').then(data);
++export const createStrategy = (req) => backend.post('/strategies', req).then(data);
++export const startStrategy = (id) => backend.post(`/strategies/${id}/start`).then(data);
++export const stopStrategy = (id) => backend.post(`/strategies/${id}/stop`).then(data);
++export const deleteStrategy = (id) => backend.delete(`/strategies/${id}`);
++
++// ---------- 포지션·거래 ----------
++export const listPositions = () => backend.get('/positions').then(data);
++export const closeTrade = (id) => backend.post(`/trades/${id}/close`).then(data);
++
++// params: { status, strategyId, from, to, sort, dir }
++export const listTrades = (params) => backend.get('/trades', { params }).then(data);
++
++// ---------- 에이전트 ----------
++export const agentSummary = () => backend.get('/agent/summary').then(data);
++export const agentLogs = (limit = 50) => backend.get('/agent/logs', { params: { limit } }).then(data);
++export const runAgentNow = () => backend.post('/agent/run').then(data);
++
+ export default backend;
+diff --git a/frontend/src/components/PnlText.vue b/frontend/src/components/PnlText.vue
+index 980406f..7c1d3bf 100644
+--- a/frontend/src/components/PnlText.vue
++++ b/frontend/src/components/PnlText.vue
+@@ -1,5 +1,5 @@
+ <template>
+-  <!-- 수익률·등락률 표시: 플러스 빨강, 마이너스 파랑 -->
++  <!-- 수익률·손익 표시: 플러스 빨강, 마이너스 파랑 -->
+   <span :class="cls">{{ text }}</span>
+ </template>
+ 
+@@ -7,18 +7,22 @@
+ import { computed } from 'vue';
+ 
+ const props = defineProps({
+-  value: { type: Number, default: null },   // % 단위 (3.5 = +3.5%)
+-  digits: { type: Number, default: 2 }
++  value: { type: Number, default: null },
++  unit: { type: String, default: '%' },     // '%' 또는 '원'
++  digits: { type: Number, default: 2 }       // % 일 때 소수점 자릿수
+ });
+ 
+ const cls = computed(() => {
+-  if (props.value == null || props.value === 0) return 'pnl-flat';
++  if (props.value == null || Math.abs(props.value) < 1e-9) return 'pnl-flat';
+   return props.value > 0 ? 'pnl-up' : 'pnl-down';
+ });
+ 
+ const text = computed(() => {
+   if (props.value == null) return '—';
+   const sign = props.value > 0 ? '+' : '';
++  if (props.unit === '원') {
++    return `${sign}${Math.round(props.value).toLocaleString('ko-KR')}원`;
++  }
+   return `${sign}${props.value.toFixed(props.digits)}%`;
+ });
+ </script>
+diff --git a/frontend/src/components/ResultList.vue b/frontend/src/components/ResultList.vue
+index e4553b0..f958c19 100644
+--- a/frontend/src/components/ResultList.vue
++++ b/frontend/src/components/ResultList.vue
+@@ -71,12 +71,14 @@
+       </table>
+     </div>
+ 
++    <!-- 검색을 한 번 해야 어떤 조건인지 확인한 뒤 시작할 수 있다 -->
+     <button
+       class="btn btn-outline-light btn-sm w-100 mt-3"
+-      disabled
+-      title="3단계(모의매매 에이전트)에서 연결 예정"
++      :disabled="!result"
++      :title="result ? '' : '먼저 검색해서 조건을 확인해주세요'"
++      @click="$emit('start-agent')"
+     >
+-      이 조건으로 에이전트 시작 (준비 중)
++      이 조건으로 에이전트 시작 (모의매매)
+     </button>
+ 
+   </div>
+@@ -84,6 +86,7 @@
+ 
+ <script setup>
+ import PnlText from './PnlText.vue';
++import { formatPrice, formatEok, formatTime } from '../utils/format';
+ 
+ defineProps({
+   result: { type: Object, default: null },
+@@ -91,27 +94,10 @@ defineProps({
+   selectedMarket: { type: String, default: '' }
+ });
+ 
+-defineEmits(['select']);
++defineEmits(['select', 'start-agent']);
+ 
+ const fixed = (v, d) => (v == null ? '—' : v.toFixed(d));
+ 
+-const formatPrice = (v) => {
+-  const abs = Math.abs(v);
+-  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 4;
+-  return v.toLocaleString('ko-KR', { maximumFractionDigits: digits });
+-};
+-
+-const formatEok = (won) => {
+-  const eok = won / 100_000_000;
+-  if (eok >= 10000) return (eok / 10000).toFixed(1) + '조';
+-  return Math.round(eok).toLocaleString('ko-KR') + '억';
+-};
+-
+-const formatTime = (ms) => {
+-  const d = new Date(ms);
+-  const pad = (n) => String(n).padStart(2, '0');
+-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+-};
+ </script>
+ 
+ <style scoped>
+diff --git a/frontend/src/components/StrategyModal.vue b/frontend/src/components/StrategyModal.vue
+new file mode 100644
+index 0000000..86e5289
+--- /dev/null
++++ b/frontend/src/components/StrategyModal.vue
+@@ -0,0 +1,242 @@
++<template>
++  <div class="modal-backdrop-custom" @click.self="$emit('close')">
++    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="strategy-title">
++
++      <h5 id="strategy-title">이 조건으로 에이전트 시작</h5>
++      <p class="paper-note">
++        <b>모의매매</b>로 실행돼요. 실제 주문은 나가지 않고, 현재가로 체결됐다고 가정해 기록만 해요.
++        (수수료 0.05% · 체결가 0.1% 불리하게 반영)
++      </p>
++
++      <!-- 매수 조건 -->
++      <div class="section">
++        <div class="section-title">매수 조건</div>
++        <div v-if="naturalText" class="natural">“{{ naturalText }}”</div>
++        <div class="chips">
++          <span v-for="l in conditionLabels(condition)" :key="l" class="chip">{{ l }}</span>
++        </div>
++      </div>
++
++      <div class="row g-2">
++        <label class="col-12 field">
++          <span>전략 이름</span>
++          <input v-model="form.name" type="text" maxlength="100" placeholder="예: 1시간봉 과매도 반등" />
++        </label>
++
++        <label class="col-6 field">
++          <span>1회 매수 금액(원)</span>
++          <input v-model.number="form.orderKrw" type="number" min="5000" step="1000" />
++        </label>
++        <label class="col-6 field">
++          <span>최대 보유 종목 수</span>
++          <input v-model.number="form.maxPositions" type="number" min="1" max="10" />
++        </label>
++      </div>
++
++      <div class="section-title mt-3">매도 규칙 <small>(먼저 걸리는 것으로 매도, 하나 이상 필요)</small></div>
++      <div class="row g-2">
++        <label class="col-6 field">
++          <span>익절: 매수가 대비 +%</span>
++          <input v-model.number="form.takeProfitPct" type="number" min="0" step="0.5" placeholder="안 씀" />
++        </label>
++        <label class="col-6 field">
++          <span>손절: 매수가 대비 -%</span>
++          <input v-model.number="form.stopLossPct" type="number" min="0" step="0.5" placeholder="안 씀" />
++        </label>
++        <label class="col-6 field">
++          <span>트레일링: 최고가 대비 -%</span>
++          <input v-model.number="form.trailingStopPct" type="number" min="0" step="0.5" placeholder="안 씀" />
++        </label>
++        <label class="col-6 field">
++          <span>최대 보유 시간</span>
++          <input v-model.number="form.maxHoldHours" type="number" min="1" placeholder="안 씀" />
++        </label>
++      </div>
++
++      <div class="section-title mt-3">리스크</div>
++      <div class="row g-2">
++        <label class="col-6 field">
++          <span>일일 손실 한도(원)</span>
++          <input v-model.number="form.dailyLossLimitKrw" type="number" min="0" step="1000" placeholder="안 씀" />
++        </label>
++        <div class="col-6 field">
++          <span>최대 투입 금액</span>
++          <div class="calc">{{ formatWon(maxExposure) }}</div>
++        </div>
++      </div>
++
++      <div v-if="error" class="alert alert-warning py-2 mt-3 mb-0">{{ error }}</div>
++
++      <div class="actions">
++        <button class="btn btn-outline-secondary" :disabled="saving" @click="$emit('close')">취소</button>
++        <button class="btn btn-primary" :disabled="saving" @click="save">
++          {{ saving ? '저장 중…' : '저장하고 시작' }}
++        </button>
++      </div>
++    </div>
++  </div>
++</template>
++
++<script setup>
++import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue';
++import { createStrategy } from '../api/backendApi';
++import { conditionLabels, formatWon, apiError } from '../utils/format';
++
++const props = defineProps({
++  condition: { type: Object, required: true },   // 백엔드 형식 ScreenerCondition
++  naturalText: { type: String, default: '' }
++});
++
++const emit = defineEmits(['close', 'saved']);
++
++const form = reactive({
++  name: props.naturalText ? props.naturalText.slice(0, 30) : '',
++  orderKrw: 10000,
++  maxPositions: 3,
++  takeProfitPct: 5,
++  stopLossPct: 3,
++  trailingStopPct: null,
++  maxHoldHours: 24,
++  dailyLossLimitKrw: 30000
++});
++
++const saving = ref(false);
++const error = ref('');
++
++const maxExposure = computed(() => (form.orderKrw || 0) * (form.maxPositions || 0));
++
++// 빈칸('') → null
++const num = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : null);
++
++const save = async () => {
++  saving.value = true;
++  error.value = '';
++  try {
++    const saved = await createStrategy({
++      name: form.name,
++      condition: props.condition,
++      naturalText: props.naturalText || null,
++      orderKrw: num(form.orderKrw),
++      maxPositions: num(form.maxPositions),
++      takeProfitPct: num(form.takeProfitPct),
++      stopLossPct: num(form.stopLossPct),
++      trailingStopPct: num(form.trailingStopPct),
++      maxHoldHours: num(form.maxHoldHours),
++      dailyLossLimitKrw: num(form.dailyLossLimitKrw),
++      enabled: true
++    });
++    emit('saved', saved);
++  } catch (e) {
++    error.value = apiError(e, '저장 실패');
++  } finally {
++    saving.value = false;
++  }
++};
++
++// ESC 로 닫기
++const onKey = (e) => {
++  if (e.key === 'Escape' && !saving.value) emit('close');
++};
++onMounted(() => window.addEventListener('keydown', onKey));
++onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
++</script>
++
++<style scoped>
++.modal-backdrop-custom {
++  position: fixed;
++  inset: 0;
++  background: rgba(0, 0, 0, 0.6);
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  z-index: 1000;
++  padding: 16px;
++}
++
++.modal-box {
++  text-align: left;
++  background: #161b22;
++  border: 1px solid #30363d;
++  border-radius: 12px;
++  padding: 22px 24px;
++  width: 100%;
++  max-width: 560px;
++  max-height: 90vh;
++  overflow-y: auto;
++}
++
++.paper-note {
++  font-size: 0.85rem;
++  color: #8b949e;
++  background: #0d1117;
++  border-radius: 8px;
++  padding: 8px 10px;
++}
++
++.section-title {
++  font-size: 0.8rem;
++  color: #8b949e;
++  margin-bottom: 6px;
++}
++
++.section-title small {
++  color: #6e7681;
++}
++
++.natural {
++  color: #c9d1d9;
++  font-size: 0.9rem;
++  margin-bottom: 6px;
++}
++
++.chips {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 4px;
++  margin-bottom: 12px;
++}
++
++.chip {
++  background: #30363d;
++  color: #c9d1d9;
++  border-radius: 6px;
++  padding: 2px 8px;
++  font-size: 0.78rem;
++}
++
++.field {
++  font-size: 0.85rem;
++}
++
++.field > span {
++  display: block;
++  color: #c9d1d9;
++  margin-bottom: 4px;
++}
++
++.field input {
++  width: 100%;
++  background: #0d1117;
++  color: white;
++  border: 1px solid #30363d;
++  border-radius: 6px;
++  padding: 6px 8px;
++}
++
++.field input:focus {
++  outline: none;
++  border-color: #3b82f6;
++}
++
++.calc {
++  padding: 6px 0;
++  font-variant-numeric: tabular-nums;
++}
++
++.actions {
++  display: flex;
++  justify-content: flex-end;
++  gap: 8px;
++  margin-top: 18px;
++}
++</style>
+diff --git a/frontend/src/utils/format.js b/frontend/src/utils/format.js
+new file mode 100644
+index 0000000..6ad093b
+--- /dev/null
++++ b/frontend/src/utils/format.js
+@@ -0,0 +1,88 @@
++// 화면 공통 표시 형식
++
++const pad = (n) => String(n).padStart(2, '0');
++
++// 가격대에 맞춰 소수점 자릿수 조절 (0.008원 같은 코인도 보이도록)
++export const formatPrice = (v) => {
++  if (v == null || Number.isNaN(v)) return '';
++  const abs = Math.abs(v);
++  const digits = abs >= 100 ? 0 : abs >= 1 ? 2 : 4;
++  return v.toLocaleString('ko-KR', { maximumFractionDigits: digits });
++};
++
++export const formatWon = (v) => (v == null ? '—' : Math.round(v).toLocaleString('ko-KR') + '원');
++
++export const formatEok = (won) => {
++  const eok = won / 100_000_000;
++  if (eok >= 10000) return (eok / 10000).toFixed(1) + '조';
++  return Math.round(eok).toLocaleString('ko-KR') + '억';
++};
++
++export const formatQty = (q) =>
++  q == null ? '' : q.toLocaleString('ko-KR', { maximumFractionDigits: q >= 1 ? 4 : 8 });
++
++// 2026-11-11 15:04
++export const formatDateTime = (ms) => {
++  if (ms == null) return '';
++  const d = new Date(ms);
++  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
++};
++
++export const formatTime = (ms) => {
++  const d = new Date(ms);
++  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
++};
++
++// 보유 시간: 3일 4시간 / 2시간 15분 / 7분
++export const formatDuration = (ms) => {
++  const min = Math.max(0, Math.floor(ms / 60000));
++  const d = Math.floor(min / 1440);
++  const h = Math.floor((min % 1440) / 60);
++  const m = min % 60;
++  if (d > 0) return `${d}일 ${h}시간`;
++  if (h > 0) return `${h}시간 ${m}분`;
++  return `${m}분`;
++};
++
++const UNIT_LABEL = { MIN15: '15분봉', MIN60: '1시간봉', MIN240: '4시간봉', DAY: '일봉' };
++
++// 저장된 검색 조건 → 사람이 읽는 꼬리표
++export const conditionLabels = (c) => {
++  if (!c) return [];
++  const out = [UNIT_LABEL[c.unit ?? 'MIN60']];
++  const range = (min, max, unit, label) => {
++    if (min != null && max != null) out.push(`${label} ${min}~${max}${unit}`);
++    else if (min != null) out.push(`${label} ≥ ${min}${unit}`);
++    else if (max != null) out.push(`${label} ≤ ${max}${unit}`);
++  };
++
++  if (c.excludeWarning) out.push('유의종목 제외');
++  range(c.minPrice, c.maxPrice, '원', '가격');
++  if (c.minTradeAmount != null) out.push(`거래대금 ≥ ${formatEok(c.minTradeAmount)}`);
++  range(c.minChangeRate, c.maxChangeRate, '%', '등락률');
++  if (c.maAligned) out.push('정배열');
++  if (c.priceAboveMa20) out.push('현재가 > MA20');
++  if (c.goldenCrossWithin != null) out.push(`골든크로스 ${c.goldenCrossWithin}봉 이내`);
++  range(c.rsiMin, c.rsiMax, '', 'RSI');
++  if (c.macdCrossWithin != null) out.push(`MACD 돌파 ${c.macdCrossWithin}봉 이내`);
++  if (c.bbLowerTouchWithin != null) out.push(`볼린저 하단 반등 ${c.bbLowerTouchWithin}봉 이내`);
++  if (c.volumeSurgeRatio != null) out.push(`거래량 ${c.volumeSurgeRatio}배↑`);
++  range(c.atrPctMin, c.atrPctMax, '%', 'ATR');
++  range(c.dropFromHighMin, c.dropFromHighMax, '%', '고점대비 하락');
++  return out;
++};
++
++// 매도 규칙 요약
++export const ruleLabels = (s) => {
++  const out = [];
++  if (s.takeProfitPct != null) out.push(`익절 +${s.takeProfitPct}%`);
++  if (s.stopLossPct != null) out.push(`손절 -${s.stopLossPct}%`);
++  if (s.trailingStopPct != null) out.push(`트레일링 -${s.trailingStopPct}%`);
++  if (s.maxHoldHours != null) out.push(`최대 ${s.maxHoldHours}시간 보유`);
++  if (s.dailyLossLimitKrw != null) out.push(`일일 손실 한도 ${formatWon(s.dailyLossLimitKrw)}`);
++  return out;
++};
++
++export const apiError = (e, fallback) =>
++  e.response?.data?.message ??
++  (e.response ? `${fallback} (HTTP ${e.response.status})` : '백엔드 서버(8080)에 연결할 수 없어요. 서버가 켜져 있는지 확인해주세요.');
+diff --git a/frontend/src/views/AgentView.vue b/frontend/src/views/AgentView.vue
+index 0467537..8efdc55 100644
+--- a/frontend/src/views/AgentView.vue
++++ b/frontend/src/views/AgentView.vue
+@@ -1,17 +1,395 @@
+ <template>
+-  <!-- TODO: 3단계(모의매매 에이전트) 에서 구현 -->
+-  <div class="placeholder-card">
+-    <h4>에이전트 현황</h4>
+-    <p class="text-secondary mb-1">진행 중인 포지션, 평가수익률(빨강/파랑), 에이전트 켜기·끄기, 오늘 손익</p>
+-    <small class="text-secondary">3단계(모의매매 에이전트) 에서 구현 예정</small>
++  <div class="agent-view">
++
++    <div v-if="error" class="alert alert-warning py-2">{{ error }}</div>
++
++    <!-- 요약 -->
++    <div class="row g-3 mb-3">
++      <div class="col-6 col-lg-3">
++        <div class="stat">
++          <div class="label">보유 평가손익</div>
++          <div class="value"><PnlText :value="summary?.evalPnl" unit="원" /></div>
++          <div class="sub"><PnlText :value="summary?.evalPnlRate" /> · {{ summary?.openCount ?? 0 }}종목</div>
++        </div>
++      </div>
++      <div class="col-6 col-lg-3">
++        <div class="stat">
++          <div class="label">오늘 실현손익</div>
++          <div class="value"><PnlText :value="summary?.todayRealizedPnl" unit="원" /></div>
++        </div>
++      </div>
++      <div class="col-6 col-lg-3">
++        <div class="stat">
++          <div class="label">누적 실현손익</div>
++          <div class="value"><PnlText :value="summary?.realizedPnl" unit="원" /></div>
++          <div class="sub"><PnlText :value="summary?.realizedPnlRate" /></div>
++        </div>
++      </div>
++      <div class="col-6 col-lg-3">
++        <div class="stat">
++          <div class="label">승률</div>
++          <div class="value">{{ summary?.winRate == null ? '—' : summary.winRate.toFixed(1) + '%' }}</div>
++          <div class="sub">완료 {{ summary?.closedCount ?? 0 }}건</div>
++        </div>
++      </div>
++    </div>
++
++    <div class="row g-3">
++      <!-- 보유 중 -->
++      <div class="col-xl-8">
++        <div class="card-box">
++          <div class="box-header">
++            <h5 class="mb-0">보유 중</h5>
++            <small class="text-secondary">{{ formatTime(updatedAt) }} 갱신 · 5초마다</small>
++          </div>
++
++          <div v-if="!positions.length" class="empty">보유 중인 종목이 없어요.</div>
++
++          <div v-else class="table-wrap">
++            <table class="table table-dark table-sm align-middle mb-0">
++              <thead>
++                <tr>
++                  <th>종목</th>
++                  <th>전략</th>
++                  <th>매수일시</th>
++                  <th class="text-end">매수가</th>
++                  <th class="text-end">현재가</th>
++                  <th class="text-end">평가수익률</th>
++                  <th class="text-end">평가손익</th>
++                  <th class="text-end">보유</th>
++                  <th></th>
++                </tr>
++              </thead>
++              <tbody>
++                <tr v-for="p in positions" :key="p.trade.id">
++                  <td>
++                    <div>{{ p.trade.koreanName }}</div>
++                    <small class="text-secondary">{{ p.trade.market }}</small>
++                  </td>
++                  <td class="text-secondary small">{{ p.trade.strategyName }}</td>
++                  <td class="small">{{ formatDateTime(p.trade.buyAt) }}</td>
++                  <td class="text-end">{{ formatPrice(p.trade.buyPrice) }}</td>
++                  <td class="text-end">{{ p.currentPrice == null ? '—' : formatPrice(p.currentPrice) }}</td>
++                  <td class="text-end"><PnlText :value="p.evalPnlRate" /></td>
++                  <td class="text-end"><PnlText :value="p.evalPnl" unit="원" /></td>
++                  <td class="text-end small">{{ formatDuration(now - p.trade.buyAt) }}</td>
++                  <td class="text-end">
++                    <button class="btn btn-sm btn-outline-secondary" :disabled="busy" @click="sellNow(p)">매도</button>
++                  </td>
++                </tr>
++              </tbody>
++            </table>
++          </div>
++          <small class="note">평가손익은 지금 팔았을 때 기준(수수료·체결가 불리 반영)이에요.</small>
++        </div>
++      </div>
++
++      <!-- 활동 기록 -->
++      <div class="col-xl-4">
++        <div class="card-box">
++          <div class="box-header">
++            <h5 class="mb-0">활동 기록</h5>
++            <button class="btn btn-sm btn-outline-secondary" :disabled="busy" title="다음 주기(1분)를 기다리지 않고 바로 판단" @click="runNow">
++              지금 실행
++            </button>
++          </div>
++          <div v-if="!logs.length" class="empty">아직 기록이 없어요.</div>
++          <ul v-else class="log-list">
++            <li v-for="l in logs" :key="l.id" :class="'lv-' + l.level">
++              <span class="t">{{ formatDateTime(l.createdAt).slice(5) }}</span>
++              <span class="badge-lv">{{ LEVEL[l.level] ?? l.level }}</span>
++              <span class="m">{{ l.message }}</span>
++            </li>
++          </ul>
++        </div>
++      </div>
++    </div>
++
++    <!-- 전략 -->
++    <div class="card-box mt-3">
++      <div class="box-header">
++        <h5 class="mb-0">전략</h5>
++        <RouterLink to="/screener" class="btn btn-sm btn-primary">+ 종목 검색에서 새 전략</RouterLink>
++      </div>
++
++      <div v-if="!strategies.length" class="empty">
++        아직 전략이 없어요. 종목 검색 탭에서 조건을 검색한 뒤 "이 조건으로 에이전트 시작"을 눌러주세요.
++      </div>
++
++      <div v-for="s in strategies" :key="s.id" class="strategy">
++        <div class="strategy-head">
++          <div>
++            <span class="state" :class="s.enabled ? 'on' : 'off'">{{ s.enabled ? '실행 중' : '정지' }}</span>
++            <b>{{ s.name }}</b>
++            <span class="mode">{{ s.mode === 'PAPER' ? '모의매매' : '실매매' }}</span>
++          </div>
++          <div class="d-flex gap-2">
++            <button v-if="s.enabled" class="btn btn-sm btn-outline-warning" :disabled="busy" @click="toggle(s)">정지</button>
++            <button v-else class="btn btn-sm btn-outline-success" :disabled="busy" @click="toggle(s)">시작</button>
++            <button class="btn btn-sm btn-outline-danger" :disabled="busy" @click="remove(s)">삭제</button>
++          </div>
++        </div>
++        <div v-if="s.naturalText" class="natural">“{{ s.naturalText }}”</div>
++        <div class="chips">
++          <span v-for="l in conditionLabels(s.condition)" :key="l" class="chip">{{ l }}</span>
++        </div>
++        <div class="rules">
++          1회 {{ formatWon(s.orderKrw) }} · 최대 {{ s.maxPositions }}종목
++          <template v-for="r in ruleLabels(s)" :key="r"> · {{ r }}</template>
++        </div>
++      </div>
++    </div>
++
+   </div>
+ </template>
+ 
++<script setup>
++import { ref, onActivated, onDeactivated, onBeforeUnmount } from 'vue';
++import PnlText from '../components/PnlText.vue';
++import {
++  agentSummary, listPositions, agentLogs, listStrategies,
++  startStrategy, stopStrategy, deleteStrategy, closeTrade, runAgentNow
++} from '../api/backendApi';
++import {
++  formatPrice, formatWon, formatDateTime, formatTime, formatDuration,
++  conditionLabels, ruleLabels, apiError
++} from '../utils/format';
++
++const LEVEL = { BUY: '매수', SELL: '매도', INFO: '안내', WARN: '주의' };
++const REFRESH_MS = 5000;
++
++const summary = ref(null);
++const positions = ref([]);
++const logs = ref([]);
++const strategies = ref([]);
++const error = ref('');
++const busy = ref(false);
++const updatedAt = ref(Date.now());
++const now = ref(Date.now());
++
++let timer = null;
++
++const load = async () => {
++  try {
++    const [s, p, l, st] = await Promise.all([agentSummary(), listPositions(), agentLogs(40), listStrategies()]);
++    summary.value = s;
++    positions.value = p;
++    logs.value = l;
++    strategies.value = st;
++    error.value = '';
++    updatedAt.value = Date.now();
++  } catch (e) {
++    error.value = apiError(e, '불러오기 실패');
++  }
++  now.value = Date.now();
++};
++
++// 이 탭이 보일 때만 5초마다 갱신 (KeepAlive 라 다른 탭으로 가면 멈춤)
++// onActivated 는 처음 마운트될 때도 호출된다
++const startPolling = () => {
++  stopPolling();
++  load();
++  timer = setInterval(load, REFRESH_MS);
++};
++const stopPolling = () => {
++  if (timer) clearInterval(timer);
++  timer = null;
++};
++
++onActivated(startPolling);
++onDeactivated(stopPolling);
++onBeforeUnmount(stopPolling);
++
++const act = async (fn, fallback) => {
++  busy.value = true;
++  try {
++    await fn();
++    await load();
++  } catch (e) {
++    error.value = apiError(e, fallback);
++  } finally {
++    busy.value = false;
++  }
++};
++
++const toggle = (s) => act(() => (s.enabled ? stopStrategy(s.id) : startStrategy(s.id)), '변경 실패');
++
++const remove = (s) => {
++  if (!confirm(`"${s.name}" 전략을 삭제할까요? 거래 기록은 남아요.`)) return;
++  act(() => deleteStrategy(s.id), '삭제 실패');
++};
++
++const sellNow = (p) => {
++  if (!confirm(`${p.trade.koreanName}을(를) 현재가로 매도할까요? (모의매매)`)) return;
++  act(() => closeTrade(p.trade.id), '매도 실패');
++};
++
++const runNow = () => act(runAgentNow, '실행 실패');
++</script>
++
+ <style scoped>
+-.placeholder-card {
+-  background-color: #161b22;
++.agent-view {
++  text-align: left;
++}
++
++.stat {
++  background: #161b22;
++  border-radius: 12px;
++  padding: 14px 16px;
++  height: 100%;
++}
++
++.stat .label {
++  color: #8b949e;
++  font-size: 0.8rem;
++}
++
++.stat .value {
++  font-size: 1.35rem;
++  font-weight: 600;
++  font-variant-numeric: tabular-nums;
++}
++
++.stat .sub {
++  font-size: 0.85rem;
++  color: #8b949e;
++}
++
++.card-box {
++  background: #161b22;
+   border-radius: 12px;
+-  padding: 40px 24px;
++  padding: 16px 18px;
++  height: 100%;
++}
++
++.box-header {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  margin-bottom: 10px;
++  gap: 8px;
++}
++
++.empty {
++  color: #8b949e;
++  padding: 24px 0;
+   text-align: center;
+ }
++
++.table-wrap {
++  overflow-x: auto;
++}
++
++th {
++  font-size: 0.78rem;
++  color: #8b949e;
++  white-space: nowrap;
++}
++
++td {
++  white-space: nowrap;
++  font-variant-numeric: tabular-nums;
++}
++
++.note {
++  display: block;
++  color: #6e7681;
++  margin-top: 8px;
++}
++
++.log-list {
++  list-style: none;
++  padding: 0;
++  margin: 0;
++  max-height: 360px;
++  overflow-y: auto;
++  font-size: 0.82rem;
++}
++
++.log-list li {
++  display: flex;
++  gap: 6px;
++  padding: 5px 0;
++  border-bottom: 1px solid #21262d;
++}
++
++.log-list .t {
++  color: #6e7681;
++  white-space: nowrap;
++  font-variant-numeric: tabular-nums;
++}
++
++.badge-lv {
++  white-space: nowrap;
++  border-radius: 4px;
++  padding: 0 5px;
++  background: #30363d;
++  color: #c9d1d9;
++  height: fit-content;
++}
++
++.lv-BUY .badge-lv { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
++.lv-SELL .badge-lv { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
++.lv-WARN .badge-lv { background: rgba(240, 180, 41, 0.2); color: #f0b429; }
++
++.log-list .m {
++  color: #c9d1d9;
++  word-break: break-all;
++}
++
++.strategy {
++  border-top: 1px solid #21262d;
++  padding: 12px 0;
++}
++
++.strategy-head {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 8px;
++  flex-wrap: wrap;
++}
++
++.state {
++  font-size: 0.75rem;
++  border-radius: 4px;
++  padding: 1px 6px;
++  margin-right: 6px;
++}
++
++.state.on { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
++.state.off { background: #30363d; color: #8b949e; }
++
++.mode {
++  font-size: 0.75rem;
++  color: #8b949e;
++  margin-left: 6px;
++}
++
++.natural {
++  color: #c9d1d9;
++  font-size: 0.88rem;
++  margin-top: 6px;
++}
++
++.chips {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 4px;
++  margin-top: 6px;
++}
++
++.chip {
++  background: #30363d;
++  color: #c9d1d9;
++  border-radius: 6px;
++  padding: 1px 7px;
++  font-size: 0.76rem;
++}
++
++.rules {
++  font-size: 0.82rem;
++  color: #8b949e;
++  margin-top: 6px;
++}
+ </style>
+diff --git a/frontend/src/views/HistoryView.vue b/frontend/src/views/HistoryView.vue
+index 086ed70..a1a12ce 100644
+--- a/frontend/src/views/HistoryView.vue
++++ b/frontend/src/views/HistoryView.vue
+@@ -1,17 +1,295 @@
+ <template>
+-  <!-- TODO: 3단계(모의매매 에이전트) 에서 구현 -->
+-  <div class="placeholder-card">
+-    <h4>투자 히스토리</h4>
+-    <p class="text-secondary mb-1">완료 거래는 매수가·매도가 모두, 진행 중 거래는 매수가만 표시. 매수일·매도일·수익률·종목명 정렬, 상태·기간 필터</p>
+-    <small class="text-secondary">3단계(모의매매 에이전트) 에서 구현 예정</small>
++  <div class="history-view">
++
++    <!-- 필터 -->
++    <div class="filters">
++      <div class="btn-group" role="group" aria-label="상태">
++        <button
++          v-for="o in STATUS_OPTIONS"
++          :key="o.label"
++          class="btn btn-sm"
++          :class="filter.status === o.value ? 'btn-primary' : 'btn-outline-secondary'"
++          @click="filter.status = o.value"
++        >
++          {{ o.label }}
++        </button>
++      </div>
++
++      <label class="f">
++        <span>전략</span>
++        <select v-model="filter.strategyId">
++          <option :value="null">전체</option>
++          <option v-for="s in strategies" :key="s.id" :value="s.id">{{ s.name }}</option>
++        </select>
++      </label>
++
++      <label class="f">
++        <span>매수일</span>
++        <input v-model="filter.from" type="date" />
++        <em>~</em>
++        <input v-model="filter.to" type="date" />
++      </label>
++
++      <button class="btn btn-sm btn-outline-secondary" @click="resetFilter">초기화</button>
++    </div>
++
++    <div v-if="error" class="alert alert-warning py-2">{{ error }}</div>
++
++    <!-- 요약 -->
++    <div class="summary">
++      <span>조회 <b>{{ rows.length }}</b>건 (진행 중 {{ openCount }} · 완료 {{ closedRows.length }})</span>
++      <span>완료 거래 실현손익 <PnlText :value="closedPnl" unit="원" /></span>
++      <span>승률 <b>{{ winRate == null ? '—' : winRate.toFixed(1) + '%' }}</b></span>
++    </div>
++
++    <div class="card-box">
++      <div v-if="!rows.length" class="empty">조건에 맞는 거래가 없어요.</div>
++
++      <div v-else class="table-wrap">
++        <table class="table table-dark table-sm table-hover align-middle mb-0">
++          <thead>
++            <tr>
++              <th class="sortable" @click="sortBy('market')">종목 <i>{{ arrow('market') }}</i></th>
++              <th>전략</th>
++              <th>상태</th>
++              <th class="sortable" @click="sortBy('buyAt')">매수일시 <i>{{ arrow('buyAt') }}</i></th>
++              <th class="sortable text-end" @click="sortBy('buyPrice')">매수가 <i>{{ arrow('buyPrice') }}</i></th>
++              <th class="text-end">수량</th>
++              <th class="text-end">매수금액</th>
++              <th class="sortable" @click="sortBy('sellAt')">매도일시 <i>{{ arrow('sellAt') }}</i></th>
++              <th class="sortable text-end" @click="sortBy('sellPrice')">매도가 <i>{{ arrow('sellPrice') }}</i></th>
++              <th class="sortable text-end" @click="sortBy('pnlRate')">수익률 <i>{{ arrow('pnlRate') }}</i></th>
++              <th class="sortable text-end" @click="sortBy('pnl')">손익 <i>{{ arrow('pnl') }}</i></th>
++              <th>매도 사유</th>
++            </tr>
++          </thead>
++          <tbody>
++            <tr v-for="t in rows" :key="t.id" :class="{ open: t.status === 'OPEN' }">
++              <td>
++                <div>{{ t.koreanName }}</div>
++                <small class="text-secondary">{{ t.market }}</small>
++              </td>
++              <td class="small text-secondary">{{ t.strategyName }}</td>
++              <td>
++                <span class="status" :class="t.status">{{ t.status === 'OPEN' ? '진행 중' : '완료' }}</span>
++              </td>
++              <td class="small">{{ formatDateTime(t.buyAt) }}</td>
++              <td class="text-end">{{ formatPrice(t.buyPrice) }}</td>
++              <td class="text-end small">{{ formatQty(t.quantity) }}</td>
++              <td class="text-end small">{{ formatWon(t.buyAmount + t.buyFee) }}</td>
++
++              <!-- 진행 중 거래는 매수 정보만 표시 -->
++              <template v-if="t.status === 'CLOSED'">
++                <td class="small">{{ formatDateTime(t.sellAt) }}</td>
++                <td class="text-end">{{ formatPrice(t.sellPrice) }}</td>
++                <td class="text-end"><PnlText :value="t.pnlRate" /></td>
++                <td class="text-end"><PnlText :value="t.pnl" unit="원" /></td>
++                <td class="small text-secondary">{{ t.sellReason }}</td>
++              </template>
++              <template v-else>
++                <td></td>
++                <td></td>
++                <td></td>
++                <td></td>
++                <td></td>
++              </template>
++            </tr>
++          </tbody>
++        </table>
++      </div>
++      <small class="note">모의매매 기록이에요. 손익은 수수료(0.05%×2)와 체결가 불리(0.1%×2)를 반영한 값이에요.</small>
++    </div>
++
+   </div>
+ </template>
+ 
++<script setup>
++import { ref, reactive, computed, watch, onActivated } from 'vue';
++import PnlText from '../components/PnlText.vue';
++import { listTrades, listStrategies } from '../api/backendApi';
++import { formatPrice, formatWon, formatQty, formatDateTime, apiError } from '../utils/format';
++
++const STATUS_OPTIONS = [
++  { label: '전체', value: null },
++  { label: '진행 중', value: 'OPEN' },
++  { label: '완료', value: 'CLOSED' }
++];
++
++const rows = ref([]);
++const strategies = ref([]);
++const error = ref('');
++
++const emptyFilter = () => ({ status: null, strategyId: null, from: '', to: '' });
++const filter = reactive(emptyFilter());
++const sort = reactive({ key: 'buyAt', dir: 'desc' });
++
++// 날짜(yyyy-mm-dd, 브라우저 시간대) → epoch ms. to 는 그날 끝까지 포함
++const dayStart = (d) => (d ? new Date(`${d}T00:00:00`).getTime() : null);
++const dayEnd = (d) => (d ? new Date(`${d}T00:00:00`).getTime() + 86_400_000 : null);
++
++const load = async () => {
++  try {
++    const [t, s] = await Promise.all([
++      listTrades({
++        status: filter.status ?? undefined,
++        strategyId: filter.strategyId ?? undefined,
++        from: dayStart(filter.from) ?? undefined,
++        to: dayEnd(filter.to) ?? undefined,
++        sort: sort.key,
++        dir: sort.dir
++      }),
++      listStrategies()
++    ]);
++    rows.value = t;
++    strategies.value = s;
++    error.value = '';
++  } catch (e) {
++    error.value = apiError(e, '불러오기 실패');
++  }
++};
++
++watch([filter, sort], load, { deep: true });
++onActivated(load); // 처음 열릴 때와 다른 탭에서 돌아올 때마다 새로 조회
++
++// 같은 열을 다시 누르면 방향 전환. 종목명은 가나다순(오름차순)으로 시작
++const sortBy = (key) => {
++  if (sort.key === key) {
++    sort.dir = sort.dir === 'desc' ? 'asc' : 'desc';
++  } else {
++    sort.key = key;
++    sort.dir = key === 'market' ? 'asc' : 'desc';
++  }
++};
++
++const arrow = (key) => (sort.key !== key ? '↕' : sort.dir === 'desc' ? '↓' : '↑');
++
++const resetFilter = () => Object.assign(filter, emptyFilter());
++
++const closedRows = computed(() => rows.value.filter((t) => t.status === 'CLOSED'));
++const openCount = computed(() => rows.value.length - closedRows.value.length);
++const closedPnl = computed(() =>
++  closedRows.value.length ? closedRows.value.reduce((sum, t) => sum + t.pnl, 0) : null
++);
++const winRate = computed(() =>
++  closedRows.value.length
++    ? (closedRows.value.filter((t) => t.pnl > 0).length * 100) / closedRows.value.length
++    : null
++);
++</script>
++
+ <style scoped>
+-.placeholder-card {
+-  background-color: #161b22;
++.history-view {
++  text-align: left;
++}
++
++.filters {
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 12px;
++  background: #161b22;
++  border-radius: 12px;
++  padding: 12px 16px;
++  margin-bottom: 12px;
++}
++
++.f {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  font-size: 0.85rem;
++  color: #c9d1d9;
++}
++
++.f em {
++  font-style: normal;
++  color: #8b949e;
++}
++
++.f select,
++.f input {
++  background: #0d1117;
++  color: white;
++  border: 1px solid #30363d;
++  border-radius: 6px;
++  padding: 4px 8px;
++  font-size: 0.85rem;
++  color-scheme: dark;
++}
++
++.summary {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 18px;
++  color: #8b949e;
++  font-size: 0.9rem;
++  margin: 0 4px 10px;
++}
++
++.summary b {
++  color: white;
++}
++
++.card-box {
++  background: #161b22;
+   border-radius: 12px;
+-  padding: 40px 24px;
++  padding: 12px 16px;
++}
++
++.empty {
++  color: #8b949e;
++  padding: 32px 0;
+   text-align: center;
+ }
++
++.table-wrap {
++  overflow-x: auto;
++}
++
++th {
++  font-size: 0.78rem;
++  color: #8b949e;
++  white-space: nowrap;
++  user-select: none;
++}
++
++th.sortable {
++  cursor: pointer;
++}
++
++th.sortable:hover {
++  color: white;
++}
++
++th i {
++  font-style: normal;
++  opacity: 0.7;
++}
++
++td {
++  white-space: nowrap;
++  font-variant-numeric: tabular-nums;
++}
++
++.status {
++  font-size: 0.75rem;
++  border-radius: 4px;
++  padding: 1px 6px;
++}
++
++.status.OPEN {
++  background: rgba(240, 180, 41, 0.18);
++  color: #f0b429;
++}
++
++.status.CLOSED {
++  background: #30363d;
++  color: #8b949e;
++}
++
++.note {
++  display: block;
++  color: #6e7681;
++  margin-top: 8px;
++}
+ </style>
+diff --git a/frontend/src/views/ScreenerView.vue b/frontend/src/views/ScreenerView.vue
+index e3e424b..6b64e47 100644
+--- a/frontend/src/views/ScreenerView.vue
++++ b/frontend/src/views/ScreenerView.vue
+@@ -19,6 +19,7 @@
+           :error="error"
+           :selectedMarket="selected?.market"
+           @select="selected = $event"
++          @start-agent="openStrategy"
+         />
+       </div>
+ 
+@@ -26,6 +27,15 @@
+         <ChartPanel :market="selected?.market" :title="selected?.koreanName" />
+       </div>
+     </div>
++
++    <!-- 전략 저장·시작 -->
++    <StrategyModal
++      v-if="strategyDraft"
++      :condition="strategyDraft.condition"
++      :naturalText="strategyDraft.naturalText"
++      @close="strategyDraft = null"
++      @saved="onStrategySaved"
++    />
+   </div>
+ </template>
+ 
+@@ -36,6 +46,8 @@ import NaturalInput from '../components/NaturalInput.vue';
+ import ConditionPanel, { defaultCondition } from '../components/ConditionPanel.vue';
+ import ResultList from '../components/ResultList.vue';
+ import ChartPanel from '../components/ChartPanel.vue';
++import StrategyModal from '../components/StrategyModal.vue';
++import { useRouter } from 'vue-router';
+ import { screen, parseCondition, parseStatus } from '../api/backendApi';
+ 
+ const condition = ref(defaultCondition());
+@@ -43,6 +55,15 @@ const result = ref(null);
+ const error = ref('');
+ const loading = ref(false);
+ const selected = ref(null);
++const router = useRouter();
++
++// 마지막으로 검색에 쓴 조건 (에이전트는 화면에 보이는 결과와 같은 조건으로 시작해야 한다)
++const lastSearched = ref(null);
++const strategyDraft = ref(null);
++
++// 자연어로 만든 조건을 패널에서 고치지 않았을 때만 원문을 함께 저장
++let nlText = '';
++let nlRequestJson = '';
+ 
+ // 자연어 검색 상태
+ const nlEnabled = ref(true);
+@@ -128,6 +149,8 @@ const searchByText = async (text) => {
+     const parsed = await parseCondition(text);
+     nlParsed.value = parsed;
+     condition.value = toForm(parsed.condition);
++    nlText = text;
++    nlRequestJson = JSON.stringify(toRequest(condition.value));
+     await search();
+   } catch (e) {
+     nlParsed.value = null;
+@@ -137,12 +160,28 @@ const searchByText = async (text) => {
+   }
+ };
+ 
++const openStrategy = () => {
++  if (!lastSearched.value) return;
++  const sameAsNl = nlText && JSON.stringify(lastSearched.value) === nlRequestJson;
++  strategyDraft.value = {
++    condition: lastSearched.value,
++    naturalText: sameAsNl ? nlText : ''
++  };
++};
++
++const onStrategySaved = () => {
++  strategyDraft.value = null;
++  router.push('/agent');
++};
++
+ const search = async () => {
+   loading.value = true;
+   error.value = '';
+ 
+   try {
+-    result.value = await screen(toRequest(condition.value));
++    const request = toRequest(condition.value);
++    result.value = await screen(request);
++    lastSearched.value = request;
+ 
+     // 1위 종목 차트를 바로 보여준다 (이전 선택이 결과에 남아 있으면 유지)
+     const items = result.value.items;
+@@ -151,6 +190,7 @@ const search = async () => {
+     }
+   } catch (e) {
+     result.value = null;
++    lastSearched.value = null;
+     error.value = errorMessage(e, '검색 실패');
+   } finally {
+     loading.value = false;
+-- 
+2.43.0
+
