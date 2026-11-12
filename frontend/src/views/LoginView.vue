@@ -20,9 +20,6 @@
         {{ loading ? '로그인 중…' : '로그인' }}
       </button>
 
-      <p class="hint">
-        처음이면 백엔드 서버 콘솔(IntelliJ)에 찍힌 <b>관리자 계정</b>으로 로그인하세요.
-      </p>
     </form>
   </div>
 </template>

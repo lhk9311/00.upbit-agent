@@ -1,0 +1,2778 @@
+From 17d8d6f1953bc406b50f4d2f24b373768fa350ff Mon Sep 17 00:00:00 2001
+From: lhk9311 <lhk9311@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 15:22:44 +0900
+Subject: [PATCH] =?UTF-8?q?feat:=20=EB=A1=9C=EA=B7=B8=EC=9D=B8(Spring=20Se?=
+ =?UTF-8?q?curity=20+=20JWT),=20=EC=84=A4=EC=A0=95=20=ED=83=AD?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- 로그인: app_user(BCrypt), 최초 관리자 자동 생성(비밀번호 로그 1회 출력, ADMIN_RESET 재설정),
+  JWT 발급·검증(jjwt 0.12), JwtAuthFilter, STATELESS 보안 설정, JSON 401
+- 로그인 시도 제한(10분 5회 → 10분 잠금), 비밀번호 변경 시 이전 토큰 무효 (+ 단위 테스트)
+- 설정: app_setting, 신규 매수 전체 중단, 수수료·슬리피지·재진입 대기, 새 전략 기본값 (+ 검증 테스트)
+- 에이전트·백테스트가 설정값을 매 주기/요청마다 사용
+- 화면: 로그인 페이지, 라우터 가드, axios 인터셉터(Bearer, 401 → 로그인), 로그아웃, 설정 탭
+- 숨은 탭에서 시세 폴링·실시간 웹소켓 중단 (KeepAlive onActivated/onDeactivated)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01B1jPsn35rbk8vNba5SX2E9
+---
+ README.md                                     |  44 +-
+ backend/build.gradle                          |   6 +
+ .../lhk/upbitagent/agent/AgentService.java    |  53 ++-
+ .../com/lhk/upbitagent/agent/Strategy.java    |   7 +
+ .../upbitagent/auth/AppUserRepository.java    |  65 +++
+ .../lhk/upbitagent/auth/AuthBootstrap.java    |  89 ++++
+ .../com/lhk/upbitagent/auth/AuthService.java  | 108 +++++
+ .../lhk/upbitagent/auth/JwtAuthFilter.java    |  57 +++
+ .../com/lhk/upbitagent/auth/JwtProvider.java  |  87 ++++
+ .../upbitagent/auth/LoginAttemptLimiter.java  |  92 ++++
+ .../lhk/upbitagent/auth/SecurityConfig.java   |  86 ++++
+ .../upbitagent/market/MarketCollector.java    | 202 +++++++-
+ .../lhk/upbitagent/settings/AppSettings.java  |  90 ++++
+ .../upbitagent/settings/SettingsService.java  |  95 ++++
+ .../lhk/upbitagent/web/AuthController.java    |  62 +++
+ .../upbitagent/web/BacktestController.java    |  16 +-
+ .../upbitagent/web/SettingsController.java    |  73 +++
+ backend/src/main/resources/application.yml    |  16 +
+ backend/src/main/resources/schema.sql         |  15 +
+ .../auth/LoginAttemptLimiterTest.java         |  54 +++
+ .../upbitagent/settings/AppSettingsTest.java  |  38 ++
+ frontend/src/App.vue                          |  61 ++-
+ frontend/src/api/backendApi.js                |  18 +-
+ frontend/src/auth.js                          |  76 +++
+ frontend/src/components/ChartPanel.vue        |  10 +-
+ frontend/src/components/CoinList.vue          |  34 +-
+ frontend/src/components/StrategyModal.vue     |  23 +-
+ frontend/src/router.js                        |  23 +-
+ frontend/src/views/LoginView.vue              | 129 +++++
+ frontend/src/views/SettingsView.vue           | 450 +++++++++++++++++-
+ 30 files changed, 2098 insertions(+), 81 deletions(-)
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/auth/AppUserRepository.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/auth/AuthBootstrap.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/auth/AuthService.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/auth/JwtAuthFilter.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/auth/JwtProvider.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/auth/LoginAttemptLimiter.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/auth/SecurityConfig.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/settings/AppSettings.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/settings/SettingsService.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/web/AuthController.java
+ create mode 100644 backend/src/main/java/com/lhk/upbitagent/web/SettingsController.java
+ create mode 100644 backend/src/test/java/com/lhk/upbitagent/auth/LoginAttemptLimiterTest.java
+ create mode 100644 backend/src/test/java/com/lhk/upbitagent/settings/AppSettingsTest.java
+ create mode 100644 frontend/src/auth.js
+ create mode 100644 frontend/src/views/LoginView.vue
+
+diff --git a/README.md b/README.md
+index d33d938..f332ab2 100644
+--- a/README.md
++++ b/README.md
+@@ -19,7 +19,7 @@ upbit-agent/
+ | 4 | 에이전트 현황 탭 (실시간 평가손익) | ✅ |
+ | 5 | 백테스트 | ✅ |
+ | 6 | 실주문 연결 (업비트 키, IP 허용, 한도) | ⏳ |
+-| 7 | 로그인, 배포 | ⏳ |
++| 7 | 로그인(Spring Security + JWT), 설정 탭 | ✅ (배포는 하지 않음) |
+ 
+ ## 실행
+ 
+@@ -70,7 +70,7 @@ npm run dev           # → http://localhost:5173
+ - **실시간 시세**: 기존 `00.upbit-chart` 화면 (코인 목록 + 차트)
+ - **에이전트 현황**: 보유 평가손익·오늘/누적 실현손익·승률, 보유 종목(평가수익률, 수동 매도), 활동 기록, 전략 시작·정지·삭제 (5초마다 갱신)
+ - **투자 히스토리**: 전체 거래. 완료 거래는 매수·매도 가격 모두, 진행 중 거래는 매수 가격만. 종목명·매수일시·매수가·매도일시·매도가·수익률·손익 정렬, 상태·전략·기간 필터
+-- **설정**: 이후 단계에서 구현
++- **설정**: 모든 전략 신규 매수 중단 스위치, 수수료·모의 체결가 불리·재진입 대기, 새 전략 기본값, 비밀번호 변경, 시스템 상태(수집 진행률 등)
+ 
+ 수익률·손익은 한국 관례대로 **플러스 빨강, 마이너스 파랑**.
+ 
+@@ -112,9 +112,39 @@ npm run dev           # → http://localhost:5173
+ 개발용 **H2 파일 DB**를 쓴다. 설치가 필요 없고, `backend/data/`에 저장돼 서버를 꺼도 기록이 남는다 (깃에는 올라가지 않음).
+ 
+ - DB 콘솔: http://localhost:8080/h2-console (JDBC URL `jdbc:h2:file:./data/upbit-agent;MODE=MySQL;AUTO_SERVER=TRUE`, 사용자 `sa`, 비밀번호 없음)
+-- 테이블: `strategy`(전략), `trade`(거래), `agent_log`(활동 기록) — `schema.sql`
++- 테이블: `strategy`(전략), `trade`(거래), `agent_log`(활동 기록), `app_user`(로그인 계정), `app_setting`(설정) — `schema.sql`
+ - 배포 때 MariaDB로 바꾸려면 `build.gradle`의 H2 를 MariaDB 드라이버로, `application.yml`의 datasource 를 MariaDB 주소로 바꾸면 된다 (SQL 은 둘 다에서 동작하도록 작성).
+ 
++## 로그인 (Spring Security + JWT)
++
++처음 서버를 켜면 관리자 계정(`admin`)이 자동으로 만들어지고, **비밀번호가 콘솔 로그에 한 번 찍힌다.**
++```
++==================================================
++  관리자 계정을 만들었어요
++  아이디   : admin
++  비밀번호 : xxxxxxxxxxxx
++==================================================
++```
++로그인 후 설정 탭에서 비밀번호를 바꾸면 된다.
++
++| 환경변수 | 설명 |
++|---|---|
++| `ADMIN_PASSWORD` | 처음 만들 관리자 비밀번호 (없으면 무작위) |
++| `ADMIN_RESET=true` | 비밀번호를 잊었을 때. 켜고 재시작하면 관리자 비밀번호를 다시 만든다 → 끝나면 꼭 끄기 |
++| `JWT_SECRET` | 토큰 서명 키(32자 이상). 없으면 재시작할 때마다 새로 만들어져 다시 로그인해야 함 |
++
++흐름
++```
++로그인: POST /api/auth/login → AuthenticationManager(UserDetailsService + BCrypt) → JWT 발급
++요청  : Authorization: Bearer <토큰> → JwtAuthFilter 가 서명·만료 확인 → 통과하면 로그인 사용자로 표시
++       → SecurityConfig 규칙(/api/auth/login 외에는 전부 로그인 필요) → 컨트롤러
++```
++- 세션을 만들지 않는다(STATELESS). 서버는 로그인 상태를 기억하지 않고, 매 요청 토큰 서명만 확인한다.
++- 비밀번호는 BCrypt 해시로만 저장한다 (`app_user` 테이블).
++- 같은 아이디로 10분 안에 5번 틀리면 10분 잠금 (`LoginAttemptLimiter`).
++- 비밀번호를 바꾸면 그 전에 발급된 토큰은 모두 무효가 된다 (`password_changed_at`).
++- 화면은 토큰을 localStorage 에 저장하고, axios 인터셉터가 모든 요청에 붙인다. 401 이면 로그인 화면으로.
++
+ ## 자연어 검색
+ 
+ ```
+@@ -153,6 +183,14 @@ POST /api/screener/parse        자연어 → 조건 변환 { "text": "..." }
+ GET  /api/screener/parse/status 자연어 검색 사용 가능 여부 (API 키 설정 여부)
+ GET  /api/collector/status      수집 현황
+ 
++POST /api/auth/login             로그인 → { token, username, expiresAt } (로그인 없이 호출 가능)
++GET  /api/auth/me                지금 로그인한 사용자
++POST /api/auth/password          비밀번호 변경 → 새 토큰
++GET  /api/settings               설정 조회
++PUT  /api/settings               설정 저장
++GET  /api/system/status          시스템 상태
++(위 로그인 API 를 뺀 모든 API 는 Authorization: Bearer <토큰> 필요)
++
+ GET  /api/strategies             전략 목록
+ POST /api/strategies             전략 저장 (+ 바로 실행)
+ POST /api/strategies/{id}/start  시작
+diff --git a/backend/build.gradle b/backend/build.gradle
+index 8d8a25d..6734b47 100644
+--- a/backend/build.gradle
++++ b/backend/build.gradle
+@@ -20,6 +20,12 @@ dependencies {
+     implementation 'org.springframework.boot:spring-boot-starter-web'
+     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+ 
++    // 로그인: Spring Security + JWT(jjwt)
++    implementation 'org.springframework.boot:spring-boot-starter-security'
++    implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
++    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
++    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
++
+     // 개발용 내장 DB (파일 저장). 운영(cafe24)에서는 MariaDB 드라이버로 교체
+     runtimeOnly 'com.h2database:h2'
+ 
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java b/backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java
+index aadd33a..6855995 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/AgentService.java
+@@ -5,17 +5,19 @@ import com.lhk.upbitagent.market.MarketDataStore;
+ import com.lhk.upbitagent.screener.ScreenerCondition;
+ import com.lhk.upbitagent.screener.ScreenerEngine;
+ import com.lhk.upbitagent.screener.ScreenerResult;
++import com.lhk.upbitagent.settings.AppSettings;
++import com.lhk.upbitagent.settings.SettingsService;
+ import com.lhk.upbitagent.store.AgentLogRepository;
+ import com.lhk.upbitagent.store.StrategyRepository;
+ import com.lhk.upbitagent.store.TradeRepository;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+-import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.scheduling.annotation.Scheduled;
+ import org.springframework.stereotype.Service;
+ 
+ import java.time.LocalDate;
+ import java.time.ZoneId;
++import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Locale;
+@@ -38,25 +40,26 @@ public class AgentService {
+     private final TradeRepository trades;
+     private final AgentLogRepository logs;
+     private final MarketDataStore market;
+-    private final AgentEngine engine;
++    /** 수수료·슬리피지·재진입 대기·전체 매수 중단은 설정 탭 값을 매 주기 읽어서 쓴다 */
++    private final SettingsService settings;
+     private final ScreenerEngine screener = new ScreenerEngine();
+-    private final long cooldownMs;
+ 
+     /** 같은 안내 문구를 매 주기 반복해서 기록하지 않기 위한 마지막 문구 */
+     private final Map<Long, String> lastNote = new HashMap<>();
+     private boolean staleWarned = false;
+ 
+     public AgentService(StrategyRepository strategies, TradeRepository trades, AgentLogRepository logs,
+-                        MarketDataStore market,
+-                        @Value("${agent.fee-rate:0.0005}") double feeRate,
+-                        @Value("${agent.paper-slippage:0.001}") double slippage,
+-                        @Value("${agent.reentry-cooldown-minutes:60}") long cooldownMinutes) {
++                        MarketDataStore market, SettingsService settings) {
+         this.strategies = strategies;
+         this.trades = trades;
+         this.logs = logs;
+         this.market = market;
+-        this.engine = new AgentEngine(new AgentEngine.Config(feeRate, slippage));
+-        this.cooldownMs = cooldownMinutes * 60_000;
++        this.settings = settings;
++    }
++
++    /** 지금 설정값(수수료·슬리피지)으로 만든 판단 엔진. 만드는 비용이 거의 없어 필요할 때마다 만든다 */
++    private AgentEngine engine() {
++        return new AgentEngine(settings.get().agentConfig());
+     }
+ 
+     // ---------- 주기 실행 ----------
+@@ -79,10 +82,12 @@ public class AgentService {
+ 
+         Map<String, Double> prices = market.prices();
+         long now = System.currentTimeMillis();
++        AppSettings app = settings.get();
++        AgentEngine engine = new AgentEngine(app.agentConfig());
+ 
+         for (Strategy s : strategies.findAll()) {
+             try {
+-                runStrategy(s, prices, now);
++                runStrategy(s, prices, now, app, engine);
+             } catch (Exception e) {
+                 log.error("전략 {} 실행 실패", s.id(), e);
+                 logs.add(s.id(), "WARN", "[" + s.name() + "] 실행 중 오류: " + e.getMessage());
+@@ -90,9 +95,18 @@ public class AgentService {
+         }
+     }
+ 
+-    private void runStrategy(Strategy s, Map<String, Double> prices, long now) {
++    private void runStrategy(Strategy original, Map<String, Double> prices, long now,
++                             AppSettings app, AgentEngine engine) {
++        // 설정 탭에서 "신규 매수 전체 중단"을 켰으면, 실행 중인 전략도 이번 주기엔 정지된 것처럼 판단
++        // (정지된 전략은 매수는 안 하고 보유 종목 매도 규칙만 계속 확인한다)
++        boolean pausedBySettings = app.buyingPaused() && original.enabled();
++        Strategy s = pausedBySettings ? original.withEnabled(false) : original;
++
+         List<Trade> open = trades.findOpenByStrategy(s.id());
+         if (!s.enabled() && open.isEmpty()) {
++            if (pausedBySettings) {
++                note(s, "설정에서 신규 매수 전체 중단 중");
++            }
+             return;
+         }
+ 
+@@ -106,7 +120,7 @@ public class AgentService {
+         }
+ 
+         double todayPnl = trades.realizedPnlSince(s.id(), startOfTodayKst());
+-        Set<String> cooldown = trades.soldMarketsSince(s.id(), now - cooldownMs);
++        Set<String> cooldown = trades.soldMarketsSince(s.id(), now - app.reentryCooldownMs());
+ 
+         AgentEngine.Decision d = engine.decide(s, open, prices, candidates, todayPnl, cooldown, now);
+ 
+@@ -115,7 +129,7 @@ public class AgentService {
+         }
+ 
+         for (AgentEngine.SellOrder order : d.sells()) {
+-            sell(order.trade(), order.marketPrice(), order.reason(), now);
++            sell(order.trade(), order.marketPrice(), order.reason(), now, engine);
+         }
+ 
+         for (AgentEngine.BuyOrder order : d.buys()) {
+@@ -129,14 +143,18 @@ public class AgentService {
+                     s.name(), t.koreanName(), price(t.buyPrice()), qty(t.quantity()), t.cost()));
+         }
+ 
+-        if (!d.notes().isEmpty()) {
+-            note(s, String.join(" / ", d.notes()));
++        List<String> notes = new ArrayList<>(d.notes());
++        if (pausedBySettings) {
++            notes.add(0, "설정에서 신규 매수 전체 중단 중");
++        }
++        if (!notes.isEmpty()) {
++            note(s, String.join(" / ", notes));
+         } else {
+             lastNote.remove(s.id());
+         }
+     }
+ 
+-    private void sell(Trade t, double marketPrice, String reason, long now) {
++    private void sell(Trade t, double marketPrice, String reason, long now, AgentEngine engine) {
+         Trade closed = engine.closeTrade(t, marketPrice, reason, now);
+         if (trades.close(closed)) {
+             logs.add(t.strategyId(), "SELL", String.format(Locale.ROOT, "[%s] %s 매도 %s원 · %s · %+.2f%% (%+,.0f원)",
+@@ -164,13 +182,14 @@ public class AgentService {
+         if (p == null) {
+             throw new IllegalStateException("현재가를 아직 받지 못했어요. 잠시 후 다시 시도해주세요.");
+         }
+-        sell(t, p, "수동 매도", System.currentTimeMillis());
++        sell(t, p, "수동 매도", System.currentTimeMillis(), engine());
+         return trades.findById(tradeId).orElseThrow();
+     }
+ 
+     /** 진행 중 거래 + 지금 팔면 얼마인지(수수료·슬리피지 반영) */
+     public List<Position> positions() {
+         long now = System.currentTimeMillis();
++        AgentEngine engine = engine();
+         return trades.findOpen().stream().map(t -> {
+             Double p = market.price(t.market());
+             if (p == null) {
+diff --git a/backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java b/backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java
+index d9fdd8c..d908f48 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java
++++ b/backend/src/main/java/com/lhk/upbitagent/agent/Strategy.java
+@@ -26,4 +26,11 @@ public record Strategy(
+         boolean enabled,
+         Long createdAt
+ ) {
++
++    /** enabled 만 바꾼 복사본 (record 는 값을 못 바꾸므로 새로 만든다) */
++    public Strategy withEnabled(boolean value) {
++        return new Strategy(id, name, condition, naturalText, orderKrw, maxPositions,
++                takeProfitPct, stopLossPct, trailingStopPct, maxHoldHours, dailyLossLimitKrw,
++                mode, value, createdAt);
++    }
+ }
+diff --git a/backend/src/main/java/com/lhk/upbitagent/auth/AppUserRepository.java b/backend/src/main/java/com/lhk/upbitagent/auth/AppUserRepository.java
+new file mode 100644
+index 0000000..72c0604
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/auth/AppUserRepository.java
+@@ -0,0 +1,65 @@
++package com.lhk.upbitagent.auth;
++
++import org.springframework.jdbc.core.RowMapper;
++import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
++import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
++import org.springframework.stereotype.Repository;
++
++import java.util.Optional;
++
++/**
++ * 로그인 계정 테이블(app_user) 접근.
++ */
++@Repository
++public class AppUserRepository {
++
++    /**
++     * @param passwordChangedAt 비밀번호를 마지막으로 바꾼 시각(ms). 처음 만든 뒤 안 바꿨으면 null
++     */
++    public record AppUser(long id, String username, String passwordHash, long createdAt, Long passwordChangedAt) {
++
++        /**
++         * 이 토큰이 아직 유효한지: 비밀번호를 바꾸기 "전"에 발급된 토큰은 거부한다.
++         * JWT 의 발급 시각(iat)은 초 단위로 저장되므로 초 단위로 비교한다.
++         */
++        public boolean acceptsTokenIssuedAt(long issuedAtMs) {
++            return passwordChangedAt == null || issuedAtMs / 1000 >= passwordChangedAt / 1000;
++        }
++    }
++
++    private static final RowMapper<AppUser> MAPPER = (rs, i) -> {
++        long changed = rs.getLong("password_changed_at");
++        return new AppUser(
++                rs.getLong("id"),
++                rs.getString("username"),
++                rs.getString("password_hash"),
++                rs.getLong("created_at"),
++                rs.wasNull() ? null : changed);
++    };
++
++    private final NamedParameterJdbcTemplate jdbc;
++
++    public AppUserRepository(NamedParameterJdbcTemplate jdbc) {
++        this.jdbc = jdbc;
++    }
++
++    public Optional<AppUser> findByUsername(String username) {
++        return jdbc.query("SELECT * FROM app_user WHERE username = :u",
++                new MapSqlParameterSource("u", username), MAPPER).stream().findFirst();
++    }
++
++    public long count() {
++        Long n = jdbc.queryForObject("SELECT COUNT(*) FROM app_user", new MapSqlParameterSource(), Long.class);
++        return n == null ? 0 : n;
++    }
++
++    public void insert(String username, String passwordHash, long now) {
++        jdbc.update("INSERT INTO app_user (username, password_hash, created_at) VALUES (:u, :h, :now)",
++                new MapSqlParameterSource("u", username).addValue("h", passwordHash).addValue("now", now));
++    }
++
++    public void updatePassword(String username, String passwordHash, long now) {
++        jdbc.update("UPDATE app_user SET password_hash = :h, password_changed_at = :now WHERE username = :u",
++                new MapSqlParameterSource("u", username).addValue("h", passwordHash).addValue("now", now));
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/auth/AuthBootstrap.java b/backend/src/main/java/com/lhk/upbitagent/auth/AuthBootstrap.java
+new file mode 100644
+index 0000000..3eee582
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/auth/AuthBootstrap.java
+@@ -0,0 +1,89 @@
++package com.lhk.upbitagent.auth;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.boot.ApplicationArguments;
++import org.springframework.boot.ApplicationRunner;
++import org.springframework.security.crypto.password.PasswordEncoder;
++import org.springframework.stereotype.Component;
++
++import java.security.SecureRandom;
++
++/**
++ * 서버가 다 켜진 직후 한 번 실행 (ApplicationRunner).
++ * - 계정이 하나도 없으면 관리자 계정을 만든다.
++ * - app.auth.reset-on-start=true 이면 관리자 비밀번호를 다시 만든다 (비밀번호를 잊었을 때).
++ *
++ * 비밀번호를 설정하지 않았으면 무작위로 만들어 콘솔에 "한 번만" 보여준다.
++ * DB 에는 BCrypt 해시만 저장되므로, 이 로그를 놓치면 원래 비밀번호는 다시 볼 수 없다 → 재설정으로 해결.
++ */
++@Component
++public class AuthBootstrap implements ApplicationRunner {
++
++    private static final Logger log = LoggerFactory.getLogger(AuthBootstrap.class);
++    private static final String CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"; // 헷갈리는 0/O, 1/l 제외
++
++    private final AppUserRepository users;
++    private final PasswordEncoder passwordEncoder;
++    private final String username;
++    private final String initialPassword;
++    private final boolean resetOnStart;
++
++    public AuthBootstrap(AppUserRepository users, PasswordEncoder passwordEncoder,
++                         @Value("${app.auth.initial-username:admin}") String username,
++                         @Value("${app.auth.initial-password:}") String initialPassword,
++                         @Value("${app.auth.reset-on-start:false}") boolean resetOnStart) {
++        this.users = users;
++        this.passwordEncoder = passwordEncoder;
++        this.username = username;
++        this.initialPassword = initialPassword;
++        this.resetOnStart = resetOnStart;
++    }
++
++    @Override
++    public void run(ApplicationArguments args) {
++        boolean exists = users.findByUsername(username).isPresent();
++        if (users.count() > 0 && !(resetOnStart && exists)) {
++            return; // 이미 계정이 있고 재설정 요청도 없으면 아무것도 안 함
++        }
++
++        boolean generated = initialPassword == null || initialPassword.isBlank();
++        String password = generated ? randomPassword(12) : initialPassword;
++        String hash = passwordEncoder.encode(password);
++        long now = System.currentTimeMillis();
++
++        if (exists) {
++            users.updatePassword(username, hash, now);
++        } else {
++            users.insert(username, hash, now);
++        }
++
++        String action = exists ? "관리자 비밀번호를 다시 만들었어요" : "관리자 계정을 만들었어요";
++        if (generated) {
++            log.warn("""
++
++                    ==================================================
++                      {}
++                      아이디   : {}
++                      비밀번호 : {}
++                      → 로그인 후 설정 탭에서 비밀번호를 바꿔주세요.
++                      (이 비밀번호는 지금 한 번만 보여요)
++                    ==================================================""", action, username, password);
++        } else {
++            log.warn("{}: {} (비밀번호는 ADMIN_PASSWORD 값)", action, username);
++        }
++        if (resetOnStart) {
++            log.warn("ADMIN_RESET 을 다시 false 로 바꿔주세요. 켜두면 재시작할 때마다 비밀번호가 바뀌어요.");
++        }
++    }
++
++    private static String randomPassword(int length) {
++        SecureRandom r = new SecureRandom();
++        StringBuilder sb = new StringBuilder(length);
++        for (int i = 0; i < length; i++) {
++            sb.append(CHARS.charAt(r.nextInt(CHARS.length())));
++        }
++        return sb.toString();
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/auth/AuthService.java b/backend/src/main/java/com/lhk/upbitagent/auth/AuthService.java
+new file mode 100644
+index 0000000..ae77e00
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/auth/AuthService.java
+@@ -0,0 +1,108 @@
++package com.lhk.upbitagent.auth;
++
++import org.springframework.security.authentication.AuthenticationManager;
++import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
++import org.springframework.security.core.AuthenticationException;
++import org.springframework.security.crypto.password.PasswordEncoder;
++import org.springframework.stereotype.Service;
++
++import java.nio.charset.StandardCharsets;
++
++/**
++ * 로그인·비밀번호 변경.
++ */
++@Service
++public class AuthService {
++
++    public static final int MIN_PASSWORD_LENGTH = 8;
++
++    private final AuthenticationManager authenticationManager;
++    private final AppUserRepository users;
++    private final PasswordEncoder passwordEncoder;
++    private final JwtProvider jwt;
++    private final LoginAttemptLimiter limiter = LoginAttemptLimiter.defaults();
++
++    public AuthService(AuthenticationManager authenticationManager, AppUserRepository users,
++                       PasswordEncoder passwordEncoder, JwtProvider jwt) {
++        this.authenticationManager = authenticationManager;
++        this.users = users;
++        this.passwordEncoder = passwordEncoder;
++        this.jwt = jwt;
++    }
++
++    /**
++     * 로그인 흐름
++     * 1) 잠겨 있으면 거부 (5번 틀리면 10분)
++     * 2) AuthenticationManager 에 아이디·비밀번호를 넘김
++     *    → UserDetailsService 로 DB 에서 계정을 찾고 → PasswordEncoder(BCrypt)로 비밀번호 비교
++     * 3) 맞으면 JWT 발급, 틀리면 실패 횟수 기록
++     */
++    public JwtProvider.Issued login(String username, String password) {
++        long now = System.currentTimeMillis();
++        String name = username == null ? "" : username.trim();
++
++        Long lockedUntil = limiter.lockedUntil(name, now);
++        if (lockedUntil != null) {
++            long minutes = Math.max(1, (lockedUntil - now + 59_999) / 60_000);
++            throw new AuthError(429, "로그인 시도가 너무 많아요. " + minutes + "분 뒤에 다시 시도해주세요.");
++        }
++
++        try {
++            authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(name, password));
++        } catch (AuthenticationException e) {
++            // 아이디가 없는 경우와 비밀번호가 틀린 경우를 구분해서 알려주지 않는다 (아이디 존재 여부 노출 방지)
++            boolean locked = limiter.recordFailure(name, now);
++            if (locked) {
++                throw new AuthError(429, "5번 틀려서 10분 동안 로그인이 잠겼어요.");
++            }
++            throw new AuthError(401, "아이디 또는 비밀번호가 맞지 않아요. (남은 시도 "
++                    + limiter.remainingAttempts(name, now) + "회)");
++        }
++
++        limiter.recordSuccess(name);
++        return jwt.issue(name);
++    }
++
++    /**
++     * 비밀번호 변경. 바꾸면 이전에 발급된 토큰은 모두 무효가 되므로 새 토큰을 돌려준다.
++     */
++    public JwtProvider.Issued changePassword(String username, String currentPassword, String newPassword) {
++        AppUserRepository.AppUser user = users.findByUsername(username)
++                .orElseThrow(() -> new AuthError(401, "로그인이 필요해요"));
++
++        if (currentPassword == null || !passwordEncoder.matches(currentPassword, user.passwordHash())) {
++            throw new AuthError(400, "현재 비밀번호가 맞지 않아요.");
++        }
++        validateNewPassword(newPassword);
++        if (passwordEncoder.matches(newPassword, user.passwordHash())) {
++            throw new AuthError(400, "지금 비밀번호와 다른 비밀번호를 입력해주세요.");
++        }
++
++        users.updatePassword(username, passwordEncoder.encode(newPassword), System.currentTimeMillis());
++        return jwt.issue(username);
++    }
++
++    static void validateNewPassword(String pw) {
++        if (pw == null || pw.length() < MIN_PASSWORD_LENGTH) {
++            throw new AuthError(400, "새 비밀번호는 " + MIN_PASSWORD_LENGTH + "자 이상이어야 해요.");
++        }
++        // BCrypt 는 72바이트까지만 비교해서, 그보다 길면 뒷부분이 무시된다
++        if (pw.getBytes(StandardCharsets.UTF_8).length > 72) {
++            throw new AuthError(400, "새 비밀번호가 너무 길어요. (최대 72바이트)");
++        }
++    }
++
++    /** 화면에 그대로 보여줄 메시지와 HTTP 상태 */
++    public static class AuthError extends RuntimeException {
++        private final int status;
++
++        public AuthError(int status, String message) {
++            super(message);
++            this.status = status;
++        }
++
++        public int status() {
++            return status;
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/auth/JwtAuthFilter.java b/backend/src/main/java/com/lhk/upbitagent/auth/JwtAuthFilter.java
+new file mode 100644
+index 0000000..305f4d6
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/auth/JwtAuthFilter.java
+@@ -0,0 +1,57 @@
++package com.lhk.upbitagent.auth;
++
++import jakarta.servlet.FilterChain;
++import jakarta.servlet.ServletException;
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletResponse;
++import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
++import org.springframework.security.core.authority.SimpleGrantedAuthority;
++import org.springframework.security.core.context.SecurityContextHolder;
++import org.springframework.web.filter.OncePerRequestFilter;
++
++import java.io.IOException;
++import java.util.List;
++
++/**
++ * 모든 요청마다 한 번 실행되는 필터.
++ * "Authorization: Bearer 토큰" 헤더가 있고 토큰이 유효하면 "로그인한 사용자" 로 표시한다.
++ *
++ * 여기서 요청을 막지는 않는다. 표시만 하고 다음으로 넘긴다.
++ * 실제로 막는 건 SecurityConfig 의 규칙(authenticated())이다 → 표시가 없으면 401.
++ *
++ * @Component 를 붙이지 않은 이유: 붙이면 스프링이 일반 서블릿 필터로도 한 번 더 등록해서
++ * 같은 요청에 두 번 끼어들 수 있다. SecurityConfig 에서 직접 만들어 보안 필터 체인에만 넣는다.
++ */
++public class JwtAuthFilter extends OncePerRequestFilter {
++
++    private static final String PREFIX = "Bearer ";
++
++    private final JwtProvider jwt;
++    private final AppUserRepository users;
++
++    public JwtAuthFilter(JwtProvider jwt, AppUserRepository users) {
++        this.jwt = jwt;
++        this.users = users;
++    }
++
++    @Override
++    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
++            throws ServletException, IOException {
++
++        String header = request.getHeader("Authorization");
++
++        if (header != null && header.startsWith(PREFIX)) {
++            jwt.parse(header.substring(PREFIX.length()))
++                    // 토큰은 맞아도 계정이 지워졌거나 비밀번호를 바꾼 뒤라면 거부
++                    .flatMap(p -> users.findByUsername(p.username())
++                            .filter(u -> u.acceptsTokenIssuedAt(p.issuedAt())))
++                    .ifPresent(u -> {
++                        var auth = new UsernamePasswordAuthenticationToken(
++                                u.username(), null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
++                        SecurityContextHolder.getContext().setAuthentication(auth);
++                    });
++        }
++
++        chain.doFilter(request, response);
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/auth/JwtProvider.java b/backend/src/main/java/com/lhk/upbitagent/auth/JwtProvider.java
+new file mode 100644
+index 0000000..834e684
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/auth/JwtProvider.java
+@@ -0,0 +1,87 @@
++package com.lhk.upbitagent.auth;
++
++import io.jsonwebtoken.Claims;
++import io.jsonwebtoken.JwtException;
++import io.jsonwebtoken.Jwts;
++import io.jsonwebtoken.security.Keys;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.stereotype.Component;
++
++import javax.crypto.SecretKey;
++import java.nio.charset.StandardCharsets;
++import java.security.SecureRandom;
++import java.util.Date;
++import java.util.Optional;
++
++/**
++ * JWT 발급·검증.
++ *
++ * JWT = "헤더.내용.서명" 세 덩어리를 점(.)으로 이은 문자열.
++ *  - 내용(payload): 누구인지(sub), 언제 발급(iat), 언제 만료(exp)
++ *  - 서명: 서버만 아는 비밀 키로 만든 값. 내용을 한 글자라도 바꾸면 서명이 안 맞아서 거부된다.
++ * 내용은 암호화가 아니라 Base64 인코딩이라 누구나 읽을 수 있다 → 비밀번호 같은 건 넣지 않는다.
++ *
++ * 세션 방식과의 차이:
++ *  - 세션: 서버가 "누가 로그인했는지" 를 메모리에 기억하고, 브라우저는 세션 ID 쿠키만 들고 다닌다.
++ *  - JWT : 서버는 아무것도 기억하지 않는다. 매 요청마다 토큰의 서명만 확인하면 누군지 안다.
++ */
++@Component
++public class JwtProvider {
++
++    private static final Logger log = LoggerFactory.getLogger(JwtProvider.class);
++
++    public record Issued(String token, long expiresAt) {
++    }
++
++    public record Parsed(String username, long issuedAt) {
++    }
++
++    private final SecretKey key;
++    private final long expiryMs;
++
++    public JwtProvider(@Value("${app.jwt.secret:}") String secret,
++                       @Value("${app.jwt.expiry-hours:12}") long expiryHours) {
++        byte[] bytes;
++        if (secret == null || secret.isBlank()) {
++            bytes = new byte[32];
++            new SecureRandom().nextBytes(bytes);
++            log.info("JWT_SECRET 이 설정되지 않아 임시 키를 만들었어요. 서버를 재시작하면 다시 로그인해야 해요.");
++        } else {
++            bytes = secret.getBytes(StandardCharsets.UTF_8);
++            if (bytes.length < 32) {
++                // HS256 은 최소 256비트(32바이트) 키가 필요하다
++                throw new IllegalStateException("JWT_SECRET 은 32자 이상이어야 해요 (지금 " + bytes.length + "자)");
++            }
++        }
++        this.key = Keys.hmacShaKeyFor(bytes);
++        this.expiryMs = expiryHours * 3_600_000L;
++    }
++
++    public Issued issue(String username) {
++        long now = System.currentTimeMillis();
++        Date expiresAt = new Date(now + expiryMs);
++        String token = Jwts.builder()
++                .subject(username)
++                .issuedAt(new Date(now))
++                .expiration(expiresAt)
++                .signWith(key)            // HS256 서명
++                .compact();
++        return new Issued(token, expiresAt.getTime());
++    }
++
++    /** 서명이 맞고 만료되지 않았으면 내용, 아니면 empty */
++    public Optional<Parsed> parse(String token) {
++        try {
++            Claims claims = Jwts.parser()
++                    .verifyWith(key)       // 서명 확인 + 만료 확인
++                    .build()
++                    .parseSignedClaims(token)
++                    .getPayload();
++            return Optional.of(new Parsed(claims.getSubject(), claims.getIssuedAt().getTime()));
++        } catch (JwtException | IllegalArgumentException e) {
++            return Optional.empty();       // 위조·만료·형식 오류
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/auth/LoginAttemptLimiter.java b/backend/src/main/java/com/lhk/upbitagent/auth/LoginAttemptLimiter.java
+new file mode 100644
+index 0000000..a478819
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/auth/LoginAttemptLimiter.java
+@@ -0,0 +1,92 @@
++package com.lhk.upbitagent.auth;
++
++import java.util.ArrayDeque;
++import java.util.Deque;
++import java.util.HashMap;
++import java.util.Map;
++
++/**
++ * 로그인 시도 제한 (비밀번호 무차별 대입 방지).
++ *
++ * 규칙: 같은 아이디로 window 시간 안에 maxFailures 번 틀리면 lockMs 동안 잠근다.
++ * 로그인에 성공하면 그 아이디의 실패 기록은 지운다.
++ *
++ * 서버 메모리에만 저장하므로 서버를 재시작하면 초기화된다 (혼자 쓰는 서비스라 충분).
++ * Spring 에 의존하지 않는 순수 Java (시각을 파라미터로 받아서 테스트하기 쉽다).
++ */
++public class LoginAttemptLimiter {
++
++    private final int maxFailures;
++    private final long windowMs;
++    private final long lockMs;
++
++    /** 아이디 → 최근 실패 시각들 */
++    private final Map<String, Deque<Long>> failures = new HashMap<>();
++    /** 아이디 → 잠금이 풀리는 시각 */
++    private final Map<String, Long> lockedUntil = new HashMap<>();
++
++    public LoginAttemptLimiter(int maxFailures, long windowMs, long lockMs) {
++        this.maxFailures = maxFailures;
++        this.windowMs = windowMs;
++        this.lockMs = lockMs;
++    }
++
++    /** 기본값: 10분 안에 5번 틀리면 10분 잠금 */
++    public static LoginAttemptLimiter defaults() {
++        return new LoginAttemptLimiter(5, 10 * 60_000L, 10 * 60_000L);
++    }
++
++    /** 잠겨 있으면 풀리는 시각, 아니면 null */
++    public synchronized Long lockedUntil(String username, long now) {
++        String key = key(username);
++        Long until = lockedUntil.get(key);
++        if (until == null) {
++            return null;
++        }
++        if (now >= until) {
++            lockedUntil.remove(key);
++            failures.remove(key);
++            return null;
++        }
++        return until;
++    }
++
++    /**
++     * 실패 기록. 이번 실패로 잠기면 true.
++     */
++    public synchronized boolean recordFailure(String username, long now) {
++        String key = key(username);
++        Deque<Long> q = failures.computeIfAbsent(key, k -> new ArrayDeque<>());
++        q.addLast(now);
++        while (!q.isEmpty() && now - q.peekFirst() > windowMs) {
++            q.removeFirst(); // window 밖의 오래된 실패는 버림
++        }
++        if (q.size() >= maxFailures) {
++            lockedUntil.put(key, now + lockMs);
++            q.clear();
++            return true;
++        }
++        return false;
++    }
++
++    /** 잠기기 전까지 남은 시도 횟수 */
++    public synchronized int remainingAttempts(String username, long now) {
++        Deque<Long> q = failures.get(key(username));
++        if (q == null) {
++            return maxFailures;
++        }
++        long recent = q.stream().filter(t -> now - t <= windowMs).count();
++        return (int) Math.max(0, maxFailures - recent);
++    }
++
++    public synchronized void recordSuccess(String username) {
++        String key = key(username);
++        failures.remove(key);
++        lockedUntil.remove(key);
++    }
++
++    /** 대소문자·공백 차이로 제한을 피하지 못하게 */
++    private static String key(String username) {
++        return username == null ? "" : username.trim().toLowerCase();
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/auth/SecurityConfig.java b/backend/src/main/java/com/lhk/upbitagent/auth/SecurityConfig.java
+new file mode 100644
+index 0000000..6848d24
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/auth/SecurityConfig.java
+@@ -0,0 +1,86 @@
++package com.lhk.upbitagent.auth;
++
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.security.authentication.AuthenticationManager;
++import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
++import org.springframework.security.config.annotation.web.builders.HttpSecurity;
++import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
++import org.springframework.security.config.http.SessionCreationPolicy;
++import org.springframework.security.core.userdetails.User;
++import org.springframework.security.core.userdetails.UserDetailsService;
++import org.springframework.security.core.userdetails.UsernameNotFoundException;
++import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
++import org.springframework.security.crypto.password.PasswordEncoder;
++import org.springframework.security.web.SecurityFilterChain;
++import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
++import org.springframework.security.web.util.matcher.RequestMatcher;
++
++import java.nio.charset.StandardCharsets;
++
++/**
++ * 보안 설정. "어떤 주소는 로그인 없이 되고, 나머지는 로그인해야 된다" 를 정하는 곳.
++ *
++ * 요청이 들어오면 컨트롤러에 닿기 전에 필터들을 차례로 지나간다 (보안 필터 체인).
++ *   요청 → JwtAuthFilter(토큰 확인) → 권한 규칙 확인 → 컨트롤러
++ */
++@Configuration
++public class SecurityConfig {
++
++    /** 로그인 없이 허용하는 주소 */
++    private static final RequestMatcher PUBLIC = request -> {
++        String uri = request.getRequestURI();
++        return uri.equals("/api/auth/login")
++                || uri.startsWith("/h2-console")   // 개발용 DB 콘솔 (H2 자체 로그인이 따로 있음)
++                || uri.equals("/error");           // 스프링 기본 에러 응답
++    };
++
++    @Bean
++    public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtProvider jwt, AppUserRepository users)
++            throws Exception {
++        http
++                // JWT 를 헤더로 보내는 방식이라 쿠키 기반 공격(CSRF)이 해당되지 않아 끈다
++                .csrf(AbstractHttpConfigurer::disable)
++                // 스프링 기본 로그인 화면·팝업은 안 쓴다 (Vue 화면에서 직접 로그인)
++                .formLogin(AbstractHttpConfigurer::disable)
++                .httpBasic(AbstractHttpConfigurer::disable)
++                // 세션을 만들지 않는다 = 서버가 로그인 상태를 기억하지 않는다 (JWT 방식의 핵심)
++                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
++                // H2 콘솔이 iframe 을 써서 같은 사이트 안에서는 허용
++                .headers(h -> h.frameOptions(f -> f.sameOrigin()))
++                .authorizeHttpRequests(a -> a
++                        .requestMatchers(PUBLIC).permitAll()
++                        .anyRequest().authenticated())
++                // 로그인 안 한 요청 → 스프링 기본 화면 대신 JSON 401
++                .exceptionHandling(e -> e.authenticationEntryPoint((request, response, ex) -> {
++                    response.setStatus(401);
++                    response.setContentType("application/json");
++                    response.setCharacterEncoding(StandardCharsets.UTF_8.name());
++                    response.getWriter().write("{\"message\":\"로그인이 필요해요\"}");
++                }))
++                // 아이디·비밀번호 필터보다 먼저 토큰을 확인
++                .addFilterBefore(new JwtAuthFilter(jwt, users), UsernamePasswordAuthenticationFilter.class);
++
++        return http.build();
++    }
++
++    /** 비밀번호 해시. BCrypt 는 같은 비밀번호도 매번 다른 해시가 나오고, 일부러 느리게 만들어 대입 공격을 어렵게 한다 */
++    @Bean
++    public PasswordEncoder passwordEncoder() {
++        return new BCryptPasswordEncoder();
++    }
++
++    /** 로그인할 때 스프링 시큐리티가 "이 아이디의 계정 정보" 를 DB 에서 가져오는 방법 */
++    @Bean
++    public UserDetailsService userDetailsService(AppUserRepository users) {
++        return username -> users.findByUsername(username)
++                .map(u -> User.withUsername(u.username()).password(u.passwordHash()).roles("ADMIN").build())
++                .orElseThrow(() -> new UsernameNotFoundException(username));
++    }
++
++    /** 아이디·비밀번호 확인을 맡는 객체. 위의 UserDetailsService + PasswordEncoder 로 자동 구성된다 */
++    @Bean
++    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
++        return config.getAuthenticationManager();
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java b/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java
+index e16bc3a..6bbbcf6 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java
++++ b/backend/src/main/java/com/lhk/upbitagent/market/MarketCollector.java
+@@ -14,93 +14,271 @@ import org.springframework.web.client.HttpClientErrorException;
+ import java.util.List;
+ 
+ /**
+- * 업비트 시세 수집기.
+- * - 현재가: 10초마다 전체 KRW 마켓을 한 번의 요청으로 갱신
+- * - 캔들: 기준봉을 하나씩 돌아가며(1시간 → 15분 → 4시간 → 일) 전체 종목 수집
+- *   종목 수(약 200) × 요청 간격 때문에 한 기준봉에 30초 정도 걸린다.
++ * ===================================================================
++ *  업비트 시세 수집기 (MarketCollector)
++ * ===================================================================
++ *
++ * [이 클래스가 하는 일]
++ *  서버가 켜져 있는 동안 "몇 초마다" 업비트에서 시세를 받아와서
++ *  MarketDataStore(메모리 저장소)에 넣어두는 일만 한다.
++ *  → 검색 화면·에이전트·백테스트는 업비트를 직접 부르지 않고, 여기서 모아둔 값을 꺼내 쓴다.
++ *
++ * [왜 미리 모아두나?]
++ *  업비트는 "1초에 요청 몇 번까지" 제한이 있다.
++ *  검색 버튼을 누를 때마다 301개 종목 캔들을 새로 받으면 제한에 바로 걸리고 느리다.
++ *  그래서 수집은 이 클래스가 뒤에서 천천히 계속 하고, 나머지는 메모리 값만 읽는다.
++ *  (식당으로 치면: 주문 들어올 때마다 장 보러 가는 게 아니라, 미리 장 봐서 냉장고에 넣어두는 것)
++ *
++ * [메서드 2개가 각각 "타이머"로 돈다]
++ *  1) refreshTickers()  : 10초마다 → 301개 종목 "현재가"를 한 번의 요청으로 갱신
++ *  2) refreshNextUnit() : 끝나면 5초 쉬고 다시 → 종목별 "캔들"을 하나씩 받아옴
++ *                         (기준봉을 돌아가며: 1시간봉 → 15분봉 → 4시간봉 → 일봉 → 다시 1시간봉 ...)
++ *
++ *  배치 과제 때 쓴 @Scheduled(cron = "0 0 15 * * *") 와 같은 기능이다.
++ *  차이는 "매일 15시에 한 번"이 아니라 "N초마다 계속 반복"이라는 것뿐.
+  */
+ @Component
++// ↑ @Component : "이 클래스는 스프링이 직접 객체로 만들어서 관리해줘(= Bean 등록)" 라는 표시.
++//   서버가 시작될 때 스프링이 new MarketCollector(...) 를 알아서 한 번 해준다.
++//   @Service, @Repository, @Controller 도 사실 다 @Component 의 한 종류(역할 이름만 다름).
++//   @Scheduled 가 동작하려면 이 클래스가 반드시 Bean 이어야 한다.
+ public class MarketCollector {
+ 
++    // ---------------------------------------------------------------
++    // 로그
++    // ---------------------------------------------------------------
++    // System.out.println 대신 쓰는 로그 도구.
++    // log.info("... {}개", 301) 처럼 쓰면 {} 자리에 값이 들어가고, 시간·스레드 이름까지 같이 찍힌다.
++    // (IntelliJ 콘솔에 보이는 "INFO ... MarketCollector : 마켓 목록 갱신: 301개" 가 이것)
++    // static final : 클래스당 하나만 있으면 되고(static), 바뀔 일이 없다(final).
+     private static final Logger log = LoggerFactory.getLogger(MarketCollector.class);
+ 
+-    /** 수집 순서. 화면 기본값인 1시간봉을 가장 먼저 */
++    // ---------------------------------------------------------------
++    // 상수
++    // ---------------------------------------------------------------
++    /**
++     * 캔들 수집 순서. 화면 기본값인 1시간봉을 가장 먼저 모은다.
++     * 서버를 켜자마자 1시간봉 검색이 가능하도록 하기 위함.
++     */
+     private static final CandleUnit[] ORDER = {
+             CandleUnit.MIN60, CandleUnit.MIN15, CandleUnit.MIN240, CandleUnit.DAY
+     };
+ 
++    /**
++     * 마켓 목록(어떤 코인이 상장돼 있는지)은 자주 안 바뀌니까 1시간에 한 번만 새로 받는다.
++     * 60 * 60 * 1000L = 3,600,000ms = 1시간.  끝의 L 은 long 타입이라는 뜻(int 범위 초과 방지).
++     */
+     private static final long MARKET_REFRESH_MS = 60 * 60 * 1000L;
+ 
++    // ---------------------------------------------------------------
++    // 의존성 (이 클래스가 일을 하려면 필요한 다른 객체들)
++    // ---------------------------------------------------------------
++    /** 업비트 API 를 실제로 호출하는 객체 (HTTP 요청 담당) */
+     private final UpbitClient upbit;
++
++    /** 받아온 시세를 넣어두는 메모리 저장소 (냉장고 역할) */
+     private final MarketDataStore store;
+ 
++    // ---------------------------------------------------------------
++    // 설정값 (application.yml 에서 읽어옴)
++    // ---------------------------------------------------------------
++    // @Value("${키:기본값}") : application.yml 의 collector.request-gap-ms 값을 이 변수에 넣어줘.
++    //                          yml 에 없으면 콜론(:) 뒤의 130 을 쓴다.
++    // → 코드를 안 고치고 yml 만 바꿔서 속도를 조절할 수 있다.
++
++    /** 캔들 요청 하나 보내고 다음 요청까지 쉬는 시간(ms). 업비트 요청 제한에 안 걸리려고. */
+     @Value("${collector.request-gap-ms:130}")
+     private long requestGapMs;
+ 
++    /** 종목 하나당 받아올 캔들 개수 (업비트는 한 번에 최대 200개까지 줌) */
+     @Value("${collector.candle-count:200}")
+     private int candleCount;
+ 
++    // ---------------------------------------------------------------
++    // 상태값 (실행되면서 바뀌는 값)
++    // ---------------------------------------------------------------
++    /** 이번에 모을 기준봉이 ORDER 배열의 몇 번째인지 (0 → 1 → 2 → 3 → 0 → ...) */
+     private int unitIndex = 0;
++
++    /** 마켓 목록을 마지막으로 받은 시각(ms). 1시간 지났는지 판단용 */
+     private long marketsLoadedAt = 0;
+ 
++    // ---------------------------------------------------------------
++    // 생성자 = 의존성 주입(DI)
++    // ---------------------------------------------------------------
++    /**
++     * 스프링이 이 클래스를 만들 때, 파라미터에 필요한 객체(UpbitClient, MarketDataStore)를
++     * 자기가 관리하는 Bean 중에서 찾아서 자동으로 넣어준다. 이게 "생성자 주입(DI)" 이다.
++     *
++     * 내가 직접 new MarketDataStore() 를 하지 않는 이유:
++     *  - 모든 클래스가 "같은" MarketDataStore 하나를 같이 써야 한다 (냉장고가 여러 개면 안 됨).
++     *  - 스프링이 하나만 만들어서(싱글톤) 필요한 곳마다 똑같은 걸 넣어준다.
++     *    → 수집기가 넣은 값을 검색 컨트롤러·에이전트가 그대로 꺼내 볼 수 있는 이유.
++     *
++     * 생성자가 하나뿐이면 @Autowired 를 안 붙여도 스프링이 알아서 이 생성자를 쓴다.
++     * 필드를 final 로 해두면 한 번 들어간 뒤 바뀌지 않아서 안전하다.
++     */
+     public MarketCollector(UpbitClient upbit, MarketDataStore store) {
+         this.upbit = upbit;
+         this.store = store;
+     }
+ 
++    // ===================================================================
++    // 타이머 1 : 현재가 갱신 (10초마다)
++    // ===================================================================
++    /**
++     * @Scheduled(fixedDelay = 10_000, initialDelay = 0)
++     *  - fixedDelay   = 10_000 : 이 메서드가 "끝난 뒤" 10초(10,000ms) 쉬고 다시 실행.
++     *                            (10_000 의 _ 는 그냥 읽기 쉽게 끊은 것. 10000 과 같다)
++     *  - initialDelay = 0      : 서버 켜지자마자 바로 첫 실행.
++     *
++     * 참고로 비슷한 옵션 3가지:
++     *  - fixedDelay : 끝나고 나서 N초 뒤 다시   ← 여기서 쓰는 것 (이전 실행과 절대 안 겹침)
++     *  - fixedRate  : 시작 시각 기준 N초마다   (실행이 오래 걸리면 밀려서 바로 또 실행될 수 있음)
++     *  - cron       : 달력 기준 "매일 15시" 같은 것 (배치 과제에서 쓴 방식)
++     *
++     * 이 메서드를 직접 호출하는 코드는 프로젝트 어디에도 없다.
++     * 스프링의 스케줄러가 시간 맞춰 알아서 불러준다.
++     * (UpbitAgentApplication 에 붙은 @EnableScheduling 이 이 기능을 켜는 스위치)
++     */
+     @Scheduled(fixedDelay = 10_000, initialDelay = 0)
+     public void refreshTickers() {
++        // try-catch 로 감싼 이유:
++        // 업비트가 잠깐 응답을 안 하거나 인터넷이 끊겨서 예외가 나도,
++        // 로그만 남기고 넘어가서 10초 뒤에 다시 시도하게 하려고.
+         try {
++            // ① 마켓 목록이 비어 있거나(서버 처음 켰을 때) 1시간이 지났으면 새로 받기
++            //    System.currentTimeMillis() = 지금 시각(1970년부터 지난 ms)
+             if (store.markets().isEmpty() || System.currentTimeMillis() - marketsLoadedAt > MARKET_REFRESH_MS) {
+-                store.updateMarkets(upbit.krwMarkets());
+-                marketsLoadedAt = System.currentTimeMillis();
++                store.updateMarkets(upbit.krwMarkets());      // KRW-BTC, KRW-ETH ... 301개
++                marketsLoadedAt = System.currentTimeMillis(); // 받은 시각 기록
+                 log.info("마켓 목록 갱신: {}개", store.markets().size());
+             }
++
++            // ② 종목 코드만 뽑아서 리스트로 만들기  ["KRW-BTC", "KRW-ETH", ...]
++            //    stream() : 리스트를 하나씩 흘려보내면서 가공
++            //    map(UpbitMarket::market) : 각 UpbitMarket 객체에서 market(코드)만 꺼냄
++            //                               = map(m -> m.market()) 과 같은 뜻
++            //    toList() : 다시 리스트로 모음
++            //    for 문으로 쓰면 이렇게 된다:
++            //      List<String> codes = new ArrayList<>();
++            //      for (UpbitMarket m : store.markets()) { codes.add(m.market()); }
+             List<String> codes = store.markets().stream().map(UpbitMarket::market).toList();
++
++            // ③ 301개 현재가를 "한 번의 요청"으로 받아서 저장
++            //    (업비트 ticker API 는 종목을 쉼표로 여러 개 넘길 수 있다)
+             store.updateTickers(upbit.tickers(codes));
++
+         } catch (Exception e) {
++            // 실패해도 서버가 죽지 않는다. warn 레벨로 기록만 하고 다음 10초를 기다린다.
+             log.warn("현재가 갱신 실패: {}", e.getMessage());
+         }
+     }
+ 
++    // ===================================================================
++    // 타이머 2 : 캔들 수집 (한 바퀴 끝나면 5초 쉬고 다음 기준봉)
++    // ===================================================================
++    /**
++     * @Scheduled(fixedDelayString = "${collector.candle-delay-ms:5000}", initialDelay = 3_000)
++     *  - fixedDelayString : fixedDelay 와 같은데, 숫자 대신 yml 설정값(문자열)을 쓰고 싶을 때.
++     *                       yml 의 collector.candle-delay-ms(5000) → 끝나고 5초 쉬고 다시 실행.
++     *  - initialDelay = 3_000 : 서버 켜고 3초 뒤 첫 실행.
++     *                           (타이머 1이 먼저 마켓 목록을 받아올 시간을 주려고)
++     *
++     * 한 번 실행될 때 하는 일:
++     *  "이번 기준봉(예: 1시간봉)" 하나를 정해서, 301개 종목 캔들을 하나씩 전부 받아온다.
++     *  301개 × (요청 시간 + 130ms 쉬기) ≈ 1분 정도 걸린다.
++     *  다 끝나면 5초 쉬고 → 다음 기준봉(15분봉)으로 다시 실행.
++     *  → 4개 기준봉을 한 바퀴 다 도는 데 약 4~5분. 그래서 캔들은 몇 분에 한 번씩 새로워진다.
++     *
++     * [중요] 타이머 1과 타이머 2는 "동시에" 돈다.
++     *  스프링 스케줄러는 기본적으로 일꾼(스레드)이 1명이라, 하나가 1분 동안 일하면 다른 게 기다려야 한다.
++     *  그래서 application.yml 에 spring.task.scheduling.pool.size: 3 으로 일꾼을 3명 둬서
++     *  현재가 갱신 / 캔들 수집 / 에이전트가 서로 안 막히게 했다.
++     *  (콘솔 로그의 [scheduling-1], [scheduling-2] 가 일꾼 이름)
++     */
+     @Scheduled(fixedDelayString = "${collector.candle-delay-ms:5000}", initialDelay = 3_000)
+     public void refreshNextUnit() {
++        // 마켓 목록을 아직 못 받았으면 받을 종목이 없으니 이번엔 그냥 끝낸다.
++        // (5초 뒤 다시 실행됨)
+         if (store.markets().isEmpty()) {
+             return;
+         }
++
++        // ① 이번에 모을 기준봉 고르기
+         CandleUnit unit = ORDER[unitIndex];
++        // 다음 실행을 위해 인덱스를 하나 넘긴다.
++        // % (나머지 연산) : 0→1→2→3 다음에 4 % 4 = 0 이 되어서 다시 처음으로 돌아간다.
++        // 이렇게 돌아가며 하나씩 처리하는 걸 "라운드 로빈" 이라고 한다.
+         unitIndex = (unitIndex + 1) % ORDER.length;
+ 
+-        long started = System.currentTimeMillis();
+-        int ok = 0;
+-        int done = 0;
++        // ② 진행 상황을 세기 위한 변수들
++        long started = System.currentTimeMillis(); // 시작 시각 (걸린 시간 계산용)
++        int ok = 0;    // 성공한 종목 수
++        int done = 0;  // 처리한(시도한) 종목 수
+         List<UpbitMarket> markets = store.markets();
+         int total = markets.size();
++
++        // 예상 시간 = 종목 수 × (쉬는 시간 130ms + 요청 시간 대략 50ms) / 1000 → 초 단위
+         log.info("{} 캔들 수집 시작 ({}개 종목, 약 {}초 소요)", unit.label(), total, total * (requestGapMs + 50) / 1000);
++
++        // ③ 종목을 하나씩 돌면서 캔들 받아오기
+         for (UpbitMarket m : markets) {
++            // 상태 API(/api/collector/status)에서 "지금 몇 개째인지" 볼 수 있게 진행률 저장
+             store.updateProgress(unit, done, total);
++
++            // 100개마다 한 번씩 로그 (안 찍으면 1분 동안 조용해서 멈춘 줄 알게 됨)
+             if (done > 0 && done % 100 == 0) {
+                 log.info("{} 캔들 수집 중 {}/{}", unit.label(), done, total);
+             }
+             done++;
++
+             try {
++                // 업비트에 "KRW-BTC 1시간봉 200개 줘" 요청
+                 List<Candle> candles = upbit.candles(unit, m.market(), candleCount);
++                // 메모리 저장소에 덮어쓰기 (같은 종목·기준봉의 이전 값은 교체됨)
+                 store.updateCandles(unit, m.market(), candles);
+                 ok++;
++
+             } catch (HttpClientErrorException.TooManyRequests e) {
++                // HTTP 429 = "요청이 너무 많아요" (업비트 요청 제한에 걸림)
++                // 1초 쉬어서 업비트를 진정시키고 다음 종목으로 넘어간다.
++                // 이 종목은 이번 바퀴에서 빠지지만, 다음 바퀴에 다시 받으니 괜찮다.
+                 log.debug("요청 제한(429), 잠시 대기: {}", m.market());
+                 sleep(1_000);
++
+             } catch (Exception e) {
++                // 그 밖의 에러(네트워크 등)도 이 종목만 건너뛰고 계속 진행.
++                // 하나 실패했다고 301개 전체 수집이 멈추면 안 되니까.
+                 log.warn("캔들 수집 실패 {} {}: {}", unit, m.market(), e.getMessage());
+             }
++
++            // 다음 요청 전에 130ms 쉬기 (요청 제한 예방)
+             sleep(requestGapMs);
+         }
+-        store.updateProgress(null, 0, 0);
+-        store.markCandlesUpdated(unit);
++
++        // ④ 한 바퀴 끝
++        store.updateProgress(null, 0, 0);   // "지금 수집 중 아님" 으로 표시
++        store.markCandlesUpdated(unit);     // "이 기준봉은 준비 완료" 표시
++                                            // → 이게 찍혀야 검색/에이전트/백테스트가 이 기준봉을 쓴다
++                                            //   (서버 켜고 1분 동안 "수집 중" 안내가 뜨는 이유)
+         log.info("{} 캔들 수집 완료: {}/{}개, {}초",
+                 unit.label(), ok, total, (System.currentTimeMillis() - started) / 1000);
++
++        // 이 메서드가 끝나면 fixedDelay(5초) 뒤에 스프링이 다시 불러준다 → 다음 기준봉 수집
+     }
+ 
++    // ===================================================================
++    // 도우미
++    // ===================================================================
++    /**
++     * 지정한 ms 만큼 현재 스레드(일꾼)를 멈춘다.
++     * Thread.sleep 은 InterruptedException 을 던질 수 있어서 매번 try-catch 를 써야 하는데,
++     * 그게 번거로워서 한 곳에 모아둔 것.
++     *
++     * InterruptedException : 누가 "그만 자고 일어나(서버 종료 등)" 라고 깨웠을 때 나는 예외.
++     * 그 신호를 무시하지 않도록 interrupt() 로 다시 표시해둔다 (자바의 관례).
++     */
+     private static void sleep(long ms) {
+         try {
+             Thread.sleep(ms);
+diff --git a/backend/src/main/java/com/lhk/upbitagent/settings/AppSettings.java b/backend/src/main/java/com/lhk/upbitagent/settings/AppSettings.java
+new file mode 100644
+index 0000000..1236b26
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/settings/AppSettings.java
+@@ -0,0 +1,90 @@
++package com.lhk.upbitagent.settings;
++
++import com.lhk.upbitagent.agent.AgentEngine;
++
++import java.util.ArrayList;
++import java.util.List;
++
++/**
++ * 설정 탭에서 바꾸는 값들. DB(app_setting)에 JSON 한 덩어리로 저장한다.
++ *
++ * @param buyingPaused           true 면 모든 전략의 신규 매수를 멈춘다 (보유 종목 매도 관리는 계속)
++ * @param feeRate                거래 수수료율 (0.0005 = 0.05%)
++ * @param paperSlippage          모의 체결가를 불리하게 조정하는 비율 (0.001 = 0.1%)
++ * @param reentryCooldownMinutes 매도한 종목을 다시 사지 않는 시간(분)
++ * @param strategyDefaults       새 전략 설정 창에 처음 채워지는 값
++ */
++public record AppSettings(
++        boolean buyingPaused,
++        double feeRate,
++        double paperSlippage,
++        int reentryCooldownMinutes,
++        StrategyDefaults strategyDefaults
++) {
++
++    /** null 이면 그 규칙을 기본으로 쓰지 않음 (예: 트레일링 null = 처음엔 꺼진 상태) */
++    public record StrategyDefaults(
++            Double orderKrw,
++            Integer maxPositions,
++            Double takeProfitPct,
++            Double stopLossPct,
++            Double trailingStopPct,
++            Integer maxHoldHours,
++            Double dailyLossLimitKrw
++    ) {
++        public static StrategyDefaults standard() {
++            return new StrategyDefaults(10_000.0, 3, 5.0, 3.0, null, 24, 30_000.0);
++        }
++    }
++
++    public AgentEngine.Config agentConfig() {
++        return new AgentEngine.Config(feeRate, paperSlippage);
++    }
++
++    public long reentryCooldownMs() {
++        return reentryCooldownMinutes * 60_000L;
++    }
++
++    /** 문제가 있으면 메시지 목록, 없으면 빈 목록 */
++    public List<String> validate() {
++        List<String> errors = new ArrayList<>();
++
++        if (!(feeRate >= 0 && feeRate <= 0.01)) {
++            errors.add("수수료율은 0~1% 사이여야 해요");
++        }
++        if (!(paperSlippage >= 0 && paperSlippage <= 0.02)) {
++            errors.add("체결가 불리 비율은 0~2% 사이여야 해요");
++        }
++        if (reentryCooldownMinutes < 0 || reentryCooldownMinutes > 7 * 24 * 60) {
++            errors.add("재진입 대기는 0분~7일 사이여야 해요");
++        }
++
++        StrategyDefaults d = strategyDefaults;
++        if (d == null) {
++            errors.add("새 전략 기본값이 없어요");
++            return errors;
++        }
++        if (d.orderKrw() == null || d.orderKrw() < AgentEngine.MIN_ORDER_KRW) {
++            errors.add("기본 1회 매수 금액은 5,000원 이상이어야 해요");
++        }
++        if (d.maxPositions() == null || d.maxPositions() < 1 || d.maxPositions() > 10) {
++            errors.add("기본 최대 보유 종목 수는 1~10개여야 해요");
++        }
++        pct(d.takeProfitPct(), "기본 익절 %", errors);
++        pct(d.stopLossPct(), "기본 손절 %", errors);
++        pct(d.trailingStopPct(), "기본 트레일링 %", errors);
++        if (d.maxHoldHours() != null && d.maxHoldHours() < 1) {
++            errors.add("기본 최대 보유 시간은 1시간 이상이어야 해요");
++        }
++        if (d.dailyLossLimitKrw() != null && d.dailyLossLimitKrw() <= 0) {
++            errors.add("기본 일일 손실 한도는 0보다 커야 해요");
++        }
++        return errors;
++    }
++
++    private static void pct(Double v, String label, List<String> errors) {
++        if (v != null && !(v > 0 && v < 100)) {
++            errors.add(label + "는 0보다 크고 100보다 작아야 해요");
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/settings/SettingsService.java b/backend/src/main/java/com/lhk/upbitagent/settings/SettingsService.java
+new file mode 100644
+index 0000000..de84ff3
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/settings/SettingsService.java
+@@ -0,0 +1,95 @@
++package com.lhk.upbitagent.settings;
++
++import com.fasterxml.jackson.core.JsonProcessingException;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
++import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
++import org.springframework.stereotype.Service;
++
++import java.util.List;
++
++/**
++ * 설정값 읽기·저장.
++ * - 처음엔 application.yml 의 agent.* 값으로 시작하고, 설정 탭에서 저장하면 DB 값이 우선한다.
++ * - 에이전트가 1분마다 읽으므로 메모리에 들고 있다가(current) 저장할 때만 바꾼다.
++ */
++@Service
++public class SettingsService {
++
++    private static final Logger log = LoggerFactory.getLogger(SettingsService.class);
++    private static final String KEY = "app";
++
++    private final NamedParameterJdbcTemplate jdbc;
++    private final ObjectMapper objectMapper;
++    private final AppSettings defaults;
++
++    /** volatile: 저장(웹 요청 스레드)과 읽기(스케줄러 스레드)가 서로 다른 스레드라 최신 값을 보게 함 */
++    private volatile AppSettings current;
++
++    public SettingsService(NamedParameterJdbcTemplate jdbc, ObjectMapper objectMapper,
++                           @Value("${agent.fee-rate:0.0005}") double feeRate,
++                           @Value("${agent.paper-slippage:0.001}") double slippage,
++                           @Value("${agent.reentry-cooldown-minutes:60}") int cooldownMinutes) {
++        this.jdbc = jdbc;
++        this.objectMapper = objectMapper;
++        this.defaults = new AppSettings(false, feeRate, slippage, cooldownMinutes,
++                AppSettings.StrategyDefaults.standard());
++    }
++
++    public AppSettings get() {
++        AppSettings s = current;
++        if (s == null) {
++            s = load();
++            current = s;
++        }
++        return s;
++    }
++
++    public AppSettings update(AppSettings next) {
++        if (next == null) {
++            throw new IllegalArgumentException("설정 값이 비어 있어요");
++        }
++        List<String> errors = next.validate();
++        if (!errors.isEmpty()) {
++            throw new IllegalArgumentException(String.join(" / ", errors));
++        }
++        String json = toJson(next);
++        MapSqlParameterSource p = new MapSqlParameterSource("k", KEY).addValue("v", json);
++        // 있으면 수정, 없으면 추가 (H2·MariaDB 둘 다에서 동작하는 방식)
++        int updated = jdbc.update("UPDATE app_setting SET setting_value = :v WHERE setting_key = :k", p);
++        if (updated == 0) {
++            jdbc.update("INSERT INTO app_setting (setting_key, setting_value) VALUES (:k, :v)", p);
++        }
++        current = next;
++        return next;
++    }
++
++    private AppSettings load() {
++        List<String> rows = jdbc.queryForList("SELECT setting_value FROM app_setting WHERE setting_key = :k",
++                new MapSqlParameterSource("k", KEY), String.class);
++        if (rows.isEmpty()) {
++            return defaults;
++        }
++        try {
++            AppSettings s = objectMapper.readValue(rows.get(0), AppSettings.class);
++            return s.strategyDefaults() == null
++                    ? new AppSettings(s.buyingPaused(), s.feeRate(), s.paperSlippage(), s.reentryCooldownMinutes(),
++                    AppSettings.StrategyDefaults.standard())
++                    : s;
++        } catch (JsonProcessingException e) {
++            log.warn("저장된 설정을 읽지 못해 기본값을 써요: {}", e.getMessage());
++            return defaults;
++        }
++    }
++
++    private String toJson(AppSettings s) {
++        try {
++            return objectMapper.writeValueAsString(s);
++        } catch (JsonProcessingException e) {
++            throw new IllegalStateException("설정을 저장하지 못했어요", e);
++        }
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/web/AuthController.java b/backend/src/main/java/com/lhk/upbitagent/web/AuthController.java
+new file mode 100644
+index 0000000..5f98ee1
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/web/AuthController.java
+@@ -0,0 +1,62 @@
++package com.lhk.upbitagent.web;
++
++import com.lhk.upbitagent.auth.AuthService;
++import com.lhk.upbitagent.auth.JwtProvider;
++import org.springframework.http.ResponseEntity;
++import org.springframework.security.core.Authentication;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import java.util.Map;
++
++@RestController
++@RequestMapping("/api/auth")
++public class AuthController {
++
++    private final AuthService auth;
++
++    public AuthController(AuthService auth) {
++        this.auth = auth;
++    }
++
++    /** 로그인 (로그인 없이 호출 가능한 유일한 API) */
++    @PostMapping("/login")
++    public TokenResponse login(@RequestBody LoginRequest req) {
++        JwtProvider.Issued issued = auth.login(req.username(), req.password());
++        return new TokenResponse(issued.token(), req.username().trim(), issued.expiresAt());
++    }
++
++    /**
++     * 지금 로그인한 사용자. Authentication 파라미터는 JwtAuthFilter 가 넣어둔 값을 스프링이 꺼내준다.
++     */
++    @GetMapping("/me")
++    public Map<String, String> me(Authentication authentication) {
++        return Map.of("username", authentication.getName());
++    }
++
++    /** 비밀번호 변경 → 새 토큰 */
++    @PostMapping("/password")
++    public TokenResponse changePassword(Authentication authentication, @RequestBody PasswordRequest req) {
++        String username = authentication.getName();
++        JwtProvider.Issued issued = auth.changePassword(username, req.currentPassword(), req.newPassword());
++        return new TokenResponse(issued.token(), username, issued.expiresAt());
++    }
++
++    @ExceptionHandler(AuthService.AuthError.class)
++    public ResponseEntity<Map<String, String>> handle(AuthService.AuthError e) {
++        return ResponseEntity.status(e.status()).body(Map.of("message", e.getMessage()));
++    }
++
++    public record LoginRequest(String username, String password) {
++    }
++
++    public record PasswordRequest(String currentPassword, String newPassword) {
++    }
++
++    public record TokenResponse(String token, String username, long expiresAt) {
++    }
++}
+diff --git a/backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java b/backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java
+index 75593e1..969f8b5 100644
+--- a/backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java
++++ b/backend/src/main/java/com/lhk/upbitagent/web/BacktestController.java
+@@ -1,14 +1,14 @@
+ package com.lhk.upbitagent.web;
+ 
+-import com.lhk.upbitagent.agent.AgentEngine;
+ import com.lhk.upbitagent.agent.Strategy;
+ import com.lhk.upbitagent.agent.StrategyRequest;
+ import com.lhk.upbitagent.backtest.BacktestEngine;
+ import com.lhk.upbitagent.domain.CandleUnit;
+ import com.lhk.upbitagent.market.MarketDataStore;
++import com.lhk.upbitagent.settings.AppSettings;
++import com.lhk.upbitagent.settings.SettingsService;
+ import com.lhk.upbitagent.store.StrategyRepository;
+ import com.lhk.upbitagent.upbit.UpbitDtos.UpbitMarket;
+-import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+@@ -32,15 +32,12 @@ public class BacktestController {
+ 
+     private final MarketDataStore market;
+     private final StrategyRepository strategies;
+-    private final BacktestEngine engine;
++    private final SettingsService settings;
+ 
+-    public BacktestController(MarketDataStore market, StrategyRepository strategies,
+-                              @Value("${agent.fee-rate:0.0005}") double feeRate,
+-                              @Value("${agent.paper-slippage:0.001}") double slippage,
+-                              @Value("${agent.reentry-cooldown-minutes:60}") long cooldownMinutes) {
++    public BacktestController(MarketDataStore market, StrategyRepository strategies, SettingsService settings) {
+         this.market = market;
+         this.strategies = strategies;
+-        this.engine = new BacktestEngine(new AgentEngine.Config(feeRate, slippage), cooldownMinutes * 60_000);
++        this.settings = settings;
+     }
+ 
+     /** 저장하기 전 전략으로 백테스트 (전략 설정 창에서 사용) */
+@@ -71,6 +68,9 @@ public class BacktestController {
+                 warnings.add(m.market());
+             }
+         }
++        // 수수료·슬리피지·재진입 대기는 설정 탭 값 그대로 (실제 에이전트와 같은 조건으로 비교하기 위함)
++        AppSettings app = settings.get();
++        BacktestEngine engine = new BacktestEngine(app.agentConfig(), app.reentryCooldownMs());
+         return engine.run(s, unit, market.candles(unit), names, warnings);
+     }
+ 
+diff --git a/backend/src/main/java/com/lhk/upbitagent/web/SettingsController.java b/backend/src/main/java/com/lhk/upbitagent/web/SettingsController.java
+new file mode 100644
+index 0000000..7d5521c
+--- /dev/null
++++ b/backend/src/main/java/com/lhk/upbitagent/web/SettingsController.java
+@@ -0,0 +1,73 @@
++package com.lhk.upbitagent.web;
++
++import com.lhk.upbitagent.market.MarketDataStore;
++import com.lhk.upbitagent.nl.ClaudeConditionParser;
++import com.lhk.upbitagent.settings.AppSettings;
++import com.lhk.upbitagent.settings.SettingsService;
++import com.lhk.upbitagent.store.AgentLogRepository;
++import org.springframework.http.ResponseEntity;
++import org.springframework.security.core.Authentication;
++import org.springframework.web.bind.annotation.ExceptionHandler;
++import org.springframework.web.bind.annotation.GetMapping;
++import org.springframework.web.bind.annotation.PutMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++import java.util.LinkedHashMap;
++import java.util.Map;
++
++@RestController
++@RequestMapping("/api")
++public class SettingsController {
++
++    private final SettingsService settings;
++    private final MarketDataStore market;
++    private final ClaudeConditionParser parser;
++    private final AgentLogRepository logs;
++    private final long startedAt = System.currentTimeMillis();
++
++    public SettingsController(SettingsService settings, MarketDataStore market,
++                              ClaudeConditionParser parser, AgentLogRepository logs) {
++        this.settings = settings;
++        this.market = market;
++        this.parser = parser;
++        this.logs = logs;
++    }
++
++    @GetMapping("/settings")
++    public AppSettings get() {
++        return settings.get();
++    }
++
++    @PutMapping("/settings")
++    public AppSettings update(@RequestBody AppSettings next, Authentication authentication) {
++        boolean wasPaused = settings.get().buyingPaused();
++        AppSettings saved = settings.update(next);
++        if (wasPaused != saved.buyingPaused()) {
++            logs.add(null, "WARN", saved.buyingPaused()
++                    ? "설정: 모든 전략 신규 매수 중단 (" + authentication.getName() + ")"
++                    : "설정: 신규 매수 재개 (" + authentication.getName() + ")");
++        } else {
++            logs.add(null, "INFO", "설정 저장 (" + authentication.getName() + ")");
++        }
++        return saved;
++    }
++
++    /** 설정 탭의 시스템 상태 */
++    @GetMapping("/system/status")
++    public Map<String, Object> status(Authentication authentication) {
++        Map<String, Object> s = new LinkedHashMap<>();
++        s.put("username", authentication.getName());
++        s.put("serverStartedAt", startedAt);
++        s.put("naturalSearchEnabled", parser.isConfigured());
++        s.put("liveTradingSupported", false);
++        s.put("collector", market.status());
++        return s;
++    }
++
++    @ExceptionHandler(IllegalArgumentException.class)
++    public ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException e) {
++        return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
++    }
++}
+diff --git a/backend/src/main/resources/application.yml b/backend/src/main/resources/application.yml
+index 04b910d..19478c0 100644
+--- a/backend/src/main/resources/application.yml
++++ b/backend/src/main/resources/application.yml
+@@ -30,6 +30,22 @@ collector:
+   # 종목당 가져올 캔들 수 (업비트 최대 200)
+   candle-count: 200
+ 
++# 로그인
++app:
++  auth:
++    # 처음 서버를 켤 때 계정이 하나도 없으면 이 아이디로 관리자 계정을 만든다
++    initial-username: admin
++    # 비워두면 무작위 비밀번호를 만들어 콘솔 로그에 한 번 보여준다 → 설정 탭에서 바꾸기
++    initial-password: ${ADMIN_PASSWORD:}
++    # 비밀번호를 잊었을 때만 true 로 켜고 서버 재시작 → 관리자 비밀번호를 다시 만든다 (끝나면 다시 false)
++    reset-on-start: ${ADMIN_RESET:false}
++  jwt:
++    # 토큰 서명 키 (32자 이상). 비워두면 서버를 켤 때마다 새로 만들어서, 재시작하면 다시 로그인해야 한다
++    secret: ${JWT_SECRET:}
++    # 로그인 유지 시간
++    expiry-hours: 12
++
++# 아래 값은 "처음 기본값"이다. 서버를 켠 뒤에는 설정 탭에서 바꾼 값(DB)이 우선한다
+ agent:
+   # 에이전트 판단 주기(ms)
+   cycle-ms: 60000
+diff --git a/backend/src/main/resources/schema.sql b/backend/src/main/resources/schema.sql
+index 4403e22..5c06770 100644
+--- a/backend/src/main/resources/schema.sql
++++ b/backend/src/main/resources/schema.sql
+@@ -51,3 +51,18 @@ CREATE TABLE IF NOT EXISTS agent_log (
+     level       VARCHAR(10)   NOT NULL,   -- INFO / BUY / SELL / WARN
+     message     VARCHAR(500)  NOT NULL
+ );
++
++-- 로그인 계정. 비밀번호는 BCrypt 해시로만 저장 (원래 비밀번호는 어디에도 남지 않음)
++CREATE TABLE IF NOT EXISTS app_user (
++    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
++    username            VARCHAR(50)  NOT NULL UNIQUE,
++    password_hash       VARCHAR(100) NOT NULL,
++    created_at          BIGINT       NOT NULL,
++    password_changed_at BIGINT                    -- 이 시각 이전에 발급된 토큰은 무효
++);
++
++-- 설정 탭 값 (키 하나에 JSON 한 덩어리)
++CREATE TABLE IF NOT EXISTS app_setting (
++    setting_key   VARCHAR(50)   PRIMARY KEY,
++    setting_value VARCHAR(4000) NOT NULL
++);
+diff --git a/backend/src/test/java/com/lhk/upbitagent/auth/LoginAttemptLimiterTest.java b/backend/src/test/java/com/lhk/upbitagent/auth/LoginAttemptLimiterTest.java
+new file mode 100644
+index 0000000..5a85b57
+--- /dev/null
++++ b/backend/src/test/java/com/lhk/upbitagent/auth/LoginAttemptLimiterTest.java
+@@ -0,0 +1,54 @@
++package com.lhk.upbitagent.auth;
++
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class LoginAttemptLimiterTest {
++
++    private static final long MIN = 60_000L;
++
++    @Test
++    void 다섯번_틀리면_잠기고_시간이_지나면_풀림() {
++        LoginAttemptLimiter l = new LoginAttemptLimiter(5, 10 * MIN, 10 * MIN);
++        for (int i = 0; i < 4; i++) {
++            assertFalse(l.recordFailure("admin", i * MIN));
++        }
++        assertEquals(1, l.remainingAttempts("admin", 4 * MIN));
++        assertTrue(l.recordFailure("admin", 4 * MIN));
++
++        assertEquals(14 * MIN, l.lockedUntil("admin", 5 * MIN).longValue());
++        assertNull(l.lockedUntil("admin", 14 * MIN));   // 잠금 해제
++        assertEquals(5, l.remainingAttempts("admin", 14 * MIN));
++    }
++
++    @Test
++    void 오래된_실패는_세지_않음() {
++        LoginAttemptLimiter l = new LoginAttemptLimiter(3, 10 * MIN, 10 * MIN);
++        l.recordFailure("admin", 0);
++        l.recordFailure("admin", MIN);
++        // 0분의 실패는 11분 시점엔 window(10분) 밖
++        assertFalse(l.recordFailure("admin", 11 * MIN));
++        assertNull(l.lockedUntil("admin", 11 * MIN));
++    }
++
++    @Test
++    void 성공하면_실패기록_초기화() {
++        LoginAttemptLimiter l = new LoginAttemptLimiter(3, 10 * MIN, 10 * MIN);
++        l.recordFailure("admin", 0);
++        l.recordFailure("admin", 1);
++        l.recordSuccess("admin");
++        assertEquals(3, l.remainingAttempts("admin", 2));
++    }
++
++    @Test
++    void 대소문자와_공백이_달라도_같은_아이디로_취급() {
++        LoginAttemptLimiter l = new LoginAttemptLimiter(2, 10 * MIN, 10 * MIN);
++        l.recordFailure("Admin", 0);
++        assertTrue(l.recordFailure(" admin ", 1));
++        assertTrue(l.lockedUntil("ADMIN", 2) != null);
++    }
++}
+diff --git a/backend/src/test/java/com/lhk/upbitagent/settings/AppSettingsTest.java b/backend/src/test/java/com/lhk/upbitagent/settings/AppSettingsTest.java
+new file mode 100644
+index 0000000..686d2c5
+--- /dev/null
++++ b/backend/src/test/java/com/lhk/upbitagent/settings/AppSettingsTest.java
+@@ -0,0 +1,38 @@
++package com.lhk.upbitagent.settings;
++
++import org.junit.jupiter.api.Test;
++
++import java.util.List;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class AppSettingsTest {
++
++    private static AppSettings with(double fee, double slip, int cooldown, AppSettings.StrategyDefaults d) {
++        return new AppSettings(false, fee, slip, cooldown, d);
++    }
++
++    @Test
++    void 기본값은_통과() {
++        assertTrue(with(0.0005, 0.001, 60, AppSettings.StrategyDefaults.standard()).validate().isEmpty());
++    }
++
++    @Test
++    void 범위를_벗어나면_항목별로_알려줌() {
++        AppSettings.StrategyDefaults bad = new AppSettings.StrategyDefaults(1_000.0, 0, 150.0, -1.0, null, 0, -5.0);
++        List<String> errors = with(0.05, -0.1, -1, bad).validate();
++        assertEquals(9, errors.size(), String.join(" / ", errors));
++    }
++
++    @Test
++    void 선택_규칙은_null_허용() {
++        AppSettings.StrategyDefaults d = new AppSettings.StrategyDefaults(5_000.0, 1, null, null, null, null, null);
++        assertTrue(with(0, 0, 0, d).validate().isEmpty());
++    }
++
++    @Test
++    void 분을_밀리초로() {
++        assertEquals(3_600_000L, with(0, 0, 60, AppSettings.StrategyDefaults.standard()).reentryCooldownMs());
++    }
++}
+diff --git a/frontend/src/App.vue b/frontend/src/App.vue
+index d253131..172d849 100644
+--- a/frontend/src/App.vue
++++ b/frontend/src/App.vue
+@@ -1,27 +1,36 @@
+ <template>
+   <div class="container-fluid app-container">
+ 
+-    <h1 class="main-title">
+-      업비트 에이전트
+-    </h1>
+-
+-    <!-- 현재 날짜·시간 -->
+-    <p class="now-clock">
+-      {{ nowText }}
+-    </p>
+-
+-    <!-- 상단 탭 -->
+-    <ul class="nav nav-tabs app-tabs">
+-      <li v-for="tab in tabs" :key="tab.path" class="nav-item">
+-        <RouterLink :to="tab.path" class="nav-link" active-class="active">
+-          {{ tab.label }}
+-        </RouterLink>
+-      </li>
+-    </ul>
+-
+-    <!-- 탭 내용. KeepAlive: 탭을 오가도 검색 조건·결과가 유지되도록 -->
++    <!-- 로그인 화면에서는 머리말·탭을 숨긴다 -->
++    <template v-if="!route.meta.public">
++      <!-- 로그인한 사용자 + 로그아웃 -->
++      <div class="user-bar">
++        <span class="text-secondary">{{ auth.session?.username }}</span>
++        <button class="btn btn-sm btn-outline-secondary" @click="logout">로그아웃</button>
++      </div>
++
++      <h1 class="main-title">
++        업비트 에이전트
++      </h1>
++
++      <!-- 현재 날짜·시간 -->
++      <p class="now-clock">
++        {{ nowText }}
++      </p>
++
++      <!-- 상단 탭 -->
++      <ul class="nav nav-tabs app-tabs">
++        <li v-for="tab in tabs" :key="tab.path" class="nav-item">
++          <RouterLink :to="tab.path" class="nav-link" active-class="active">
++            {{ tab.label }}
++          </RouterLink>
++        </li>
++      </ul>
++    </template>
++
++    <!-- 탭 내용. KeepAlive: 탭을 오가도 검색 조건·결과가 유지되도록 (로그인 화면은 제외) -->
+     <RouterView v-slot="{ Component }">
+-      <KeepAlive>
++      <KeepAlive exclude="LoginView">
+         <component :is="Component" />
+       </KeepAlive>
+     </RouterView>
+@@ -31,7 +40,11 @@
+ 
+ <script setup>
+ import { ref, onMounted, onBeforeUnmount } from 'vue';
++import { useRoute } from 'vue-router';
+ import { tabs } from './router';
++import { auth, logout } from './auth';
++
++const route = useRoute();
+ 
+ // ---------- 현재 날짜·시간 ----------
+ const nowText = ref('');
+@@ -77,6 +90,14 @@ body {
+   padding: 30px;
+ }
+ 
++.user-bar {
++  display: flex;
++  justify-content: flex-end;
++  align-items: center;
++  gap: 10px;
++  font-size: 0.85rem;
++}
++
+ .main-title {
+   text-align: center;
+   margin-bottom: 8px;
+diff --git a/frontend/src/api/backendApi.js b/frontend/src/api/backendApi.js
+index 68e18bb..6d22d56 100644
+--- a/frontend/src/api/backendApi.js
++++ b/frontend/src/api/backendApi.js
+@@ -1,11 +1,27 @@
+ import axios from 'axios';
++import { installAuth } from '../auth';
+ 
+-// 우리 백엔드(Spring Boot). 개발 중엔 Vite proxy, 배포 땐 nginx 가 /api 를 넘겨준다.
++// 우리 백엔드(Spring Boot). 개발 중엔 Vite proxy 가 /api 를 8080 으로 넘겨준다.
+ const backend = axios.create({
+   baseURL: '/api',
+   timeout: 10000
+ });
+ 
++// 모든 요청에 로그인 토큰을 붙이고, 401 이면 로그인 화면으로
++installAuth(backend);
++
++// ---------- 로그인 ----------
++export const login = (username, password) =>
++  backend.post('/auth/login', { username, password }).then(res => res.data);
++
++export const changePassword = (currentPassword, newPassword) =>
++  backend.post('/auth/password', { currentPassword, newPassword }).then(res => res.data);
++
++// ---------- 설정 ----------
++export const getSettings = () => backend.get('/settings').then(res => res.data);
++export const saveSettings = (settings) => backend.put('/settings', settings).then(res => res.data);
++export const systemStatus = () => backend.get('/system/status').then(res => res.data);
++
+ export const screen = (condition) =>
+   backend.post('/screener', condition).then(res => res.data);
+ 
+diff --git a/frontend/src/auth.js b/frontend/src/auth.js
+new file mode 100644
+index 0000000..8fa8ab1
+--- /dev/null
++++ b/frontend/src/auth.js
+@@ -0,0 +1,76 @@
++// 로그인 상태 관리
++//
++// 로그인하면 서버가 JWT 토큰을 준다. 그걸 브라우저(localStorage)에 저장해두고,
++// 우리 백엔드로 가는 모든 요청 헤더에 "Authorization: Bearer 토큰" 을 붙인다.
++//
++// 참고: localStorage 는 같은 사이트의 스크립트가 읽을 수 있어서, 화면에 남의 스크립트가 끼어드는(XSS)
++// 상황에선 토큰이 노출될 수 있다. 실무에서는 HttpOnly 쿠키에 담는 방식도 많이 쓴다.
++import { reactive } from 'vue';
++
++const KEY = 'upbit-agent-auth';
++
++const load = () => {
++  try {
++    const saved = JSON.parse(localStorage.getItem(KEY));
++    if (saved?.token && saved.expiresAt > Date.now()) return saved;
++  } catch {
++    // 저장소를 못 쓰는 환경(시크릿 모드 등)이면 로그인 정보 없이 시작
++  }
++  return null;
++};
++
++// { token, username, expiresAt }
++export const auth = reactive({ session: load() });
++
++export const isLoggedIn = () => !!auth.session && auth.session.expiresAt > Date.now();
++
++export const saveSession = (session) => {
++  auth.session = session;
++  try {
++    localStorage.setItem(KEY, JSON.stringify(session));
++  } catch {
++    // 저장 실패해도 이번 탭에서는 로그인 상태 유지
++  }
++};
++
++export const clearSession = () => {
++  auth.session = null;
++  try {
++    localStorage.removeItem(KEY);
++  } catch {
++    // 무시
++  }
++};
++
++// 로그아웃: 저장된 토큰을 지우고 로그인 화면으로 (새로고침해서 화면에 남은 데이터도 비움)
++export const logout = () => {
++  clearSession();
++  window.location.assign('/login');
++};
++
++// axios 인스턴스에 토큰 처리를 붙인다 (backendApi.js 에서 호출)
++export const installAuth = (http) => {
++  // 요청 보내기 전: 토큰이 있으면 헤더에 붙이기
++  http.interceptors.request.use((config) => {
++    if (auth.session?.token) {
++      config.headers.Authorization = `Bearer ${auth.session.token}`;
++    }
++    return config;
++  });
++
++  // 응답 받은 뒤: 401(로그인 필요)이면 로그인 화면으로
++  http.interceptors.response.use(
++    (res) => res,
++    (error) => {
++      const url = error.config?.url ?? '';
++      // 로그인 요청 자체의 401(비밀번호 틀림)은 로그인 화면이 직접 메시지를 보여준다
++      if (error.response?.status === 401 && !url.startsWith('/auth/login')) {
++        clearSession();
++        const here = window.location.pathname + window.location.search;
++        window.location.assign('/login?redirect=' + encodeURIComponent(here));
++        return new Promise(() => {}); // 이동하는 동안 화면에 에러가 뜨지 않게 멈춰둔다
++      }
++      return Promise.reject(error);
++    }
++  );
++};
+diff --git a/frontend/src/components/ChartPanel.vue b/frontend/src/components/ChartPanel.vue
+index cdfef4e..df2bb09 100644
+--- a/frontend/src/components/ChartPanel.vue
++++ b/frontend/src/components/ChartPanel.vue
+@@ -27,7 +27,7 @@
+ <script setup>
+ // 차트 카드: 기간 버튼 + 캔들 차트 + 실시간(웹소켓)
+ // 실시간 리스트 탭과 종목 검색 탭에서 함께 사용한다.
+-import { ref, watch, onBeforeUnmount } from 'vue';
++import { ref, watch, onBeforeUnmount, onActivated, onDeactivated } from 'vue';
+ import axios from 'axios';
+ 
+ import CoinChart from './CoinChart.vue';
+@@ -93,6 +93,14 @@ watch(
+ 
+ onBeforeUnmount(closeSocket);
+ 
++// 다른 탭으로 가면 실시간 연결을 닫고, 돌아오면 다시 연결 (안 보이는 차트에 체결을 받을 필요 없음)
++onDeactivated(closeSocket);
++onActivated(() => {
++  if (isRealtime.value && props.market && !socket) {
++    startRealtime(props.market);
++  }
++});
++
+ // ---------- 기간 변경 ----------
+ async function changePeriod(period) {
+   if (period === 'realtime') {
+diff --git a/frontend/src/components/CoinList.vue b/frontend/src/components/CoinList.vue
+index 2e3982b..8a81e78 100644
+--- a/frontend/src/components/CoinList.vue
++++ b/frontend/src/components/CoinList.vue
+@@ -101,7 +101,7 @@
+ </template>
+ 
+ <script setup>
+-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
++import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated } from 'vue';
+ import api from '../api/upbitApi';
+ 
+ // 부모(App.vue)에게 이벤트 전달
+@@ -206,6 +206,10 @@ let refreshTimer = null;
+ 
+ // 현재가 조회: 마켓 전체를 한 번의 요청으로 가져온다
+ const loadTickers = async () => {
++  // 마켓 목록을 아직 못 받았으면 요청할 종목이 없다
++  if (!krwMarkets.length) {
++    return;
++  }
+   try {
+     const tickerRes = await api.get('/ticker', {
+       params: {
+@@ -246,7 +250,7 @@ const loadTickers = async () => {
+   }
+ };
+ 
+-// 최초 조회 + 주기적 갱신
++// 최초 조회 (마켓 목록은 한 번만)
+ onMounted(async () => {
+   try {
+     const marketRes = await api.get('/market/all');
+@@ -257,16 +261,34 @@ onMounted(async () => {
+ 
+     await loadTickers();
+ 
+-    refreshTimer = setInterval(loadTickers, REFRESH_MS);
+-
+   } catch (error) {
+     console.error(error);
+   }
+ });
+ 
+-onBeforeUnmount(() => {
+-  clearInterval(refreshTimer);
++// 주기적 갱신은 이 탭이 "보일 때만"
++// 상단 탭은 KeepAlive 라 다른 탭으로 가도 화면이 살아 있어서, 그냥 두면 안 보이는 동안에도 3초마다 요청한다
++// onActivated : 탭이 보일 때 (처음 열릴 때 포함)
++// onDeactivated : 다른 탭으로 갔을 때
++const startPolling = () => {
++  stopPolling();
++  refreshTimer = setInterval(loadTickers, REFRESH_MS);
++};
++
++const stopPolling = () => {
++  if (refreshTimer) {
++    clearInterval(refreshTimer);
++    refreshTimer = null;
++  }
++};
++
++onActivated(() => {
++  loadTickers(); // 돌아오자마자 최신 값으로
++  startPolling();
+ });
++
++onDeactivated(stopPolling);
++onBeforeUnmount(stopPolling);
+ </script>
+ 
+ <style scoped>
+diff --git a/frontend/src/components/StrategyModal.vue b/frontend/src/components/StrategyModal.vue
+index 3b377c7..37cbf63 100644
+--- a/frontend/src/components/StrategyModal.vue
++++ b/frontend/src/components/StrategyModal.vue
+@@ -91,7 +91,7 @@
+ 
+ <script setup>
+ import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue';
+-import { createStrategy, backtest } from '../api/backendApi';
++import { createStrategy, backtest, getSettings } from '../api/backendApi';
+ import BacktestResult from './BacktestResult.vue';
+ import { conditionLabels, formatWon, apiError } from '../utils/format';
+ 
+@@ -172,7 +172,26 @@ const save = async () => {
+ const onKey = (e) => {
+   if (e.key === 'Escape' && !busy.value) emit('close');
+ };
+-onMounted(() => window.addEventListener('keydown', onKey));
++onMounted(async () => {
++  window.addEventListener('keydown', onKey);
++  // 설정 탭의 "새 전략 기본값" 으로 채운다 (못 불러오면 위의 값 그대로)
++  try {
++    const d = (await getSettings()).strategyDefaults;
++    if (d) {
++      Object.assign(form, {
++        orderKrw: d.orderKrw,
++        maxPositions: d.maxPositions,
++        takeProfitPct: d.takeProfitPct,
++        stopLossPct: d.stopLossPct,
++        trailingStopPct: d.trailingStopPct,
++        maxHoldHours: d.maxHoldHours,
++        dailyLossLimitKrw: d.dailyLossLimitKrw
++      });
++    }
++  } catch {
++    // 무시
++  }
++});
+ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
+ </script>
+ 
+diff --git a/frontend/src/router.js b/frontend/src/router.js
+index 345b8f3..b0a919b 100644
+--- a/frontend/src/router.js
++++ b/frontend/src/router.js
+@@ -5,6 +5,8 @@ import MarketView from './views/MarketView.vue';
+ import AgentView from './views/AgentView.vue';
+ import HistoryView from './views/HistoryView.vue';
+ import SettingsView from './views/SettingsView.vue';
++import LoginView from './views/LoginView.vue';
++import { isLoggedIn } from './auth';
+ 
+ // 상단 탭 = 라우트. 탭마다 주소가 따로 생긴다.
+ export const tabs = [
+@@ -15,10 +17,27 @@ export const tabs = [
+   { path: '/settings', label: '설정', component: SettingsView }
+ ];
+ 
+-export default createRouter({
++const router = createRouter({
+   history: createWebHistory(),
+   routes: [
+     { path: '/', redirect: '/screener' },
+-    ...tabs.map(({ path, component, label }) => ({ path, component, meta: { label } }))
++    { path: '/login', component: LoginView, meta: { public: true } },
++    ...tabs.map(({ path, component, label }) => ({ path, component, meta: { label } })),
++    { path: '/:pathMatch(.*)*', redirect: '/screener' }
+   ]
+ });
++
++// 화면을 옮길 때마다 확인: 로그인 안 했으면 로그인 화면으로 보낸다
++// (진짜 보안은 서버가 한다. 이건 화면 편의를 위한 것)
++router.beforeEach((to) => {
++  if (to.meta.public) {
++    // 이미 로그인했는데 로그인 화면으로 가면 첫 탭으로
++    return to.path === '/login' && isLoggedIn() ? '/screener' : true;
++  }
++  if (!isLoggedIn()) {
++    return { path: '/login', query: { redirect: to.fullPath } };
++  }
++  return true;
++});
++
++export default router;
+diff --git a/frontend/src/views/LoginView.vue b/frontend/src/views/LoginView.vue
+new file mode 100644
+index 0000000..d96ef1c
+--- /dev/null
++++ b/frontend/src/views/LoginView.vue
+@@ -0,0 +1,129 @@
++<template>
++  <div class="login-wrap">
++    <form class="login-card" @submit.prevent="submit">
++      <h2>업비트 에이전트</h2>
++      <p class="sub">로그인이 필요해요</p>
++
++      <label class="field">
++        <span>아이디</span>
++        <input v-model="username" type="text" autocomplete="username" autofocus required />
++      </label>
++
++      <label class="field">
++        <span>비밀번호</span>
++        <input v-model="password" type="password" autocomplete="current-password" required />
++      </label>
++
++      <div v-if="error" class="alert alert-warning py-2 mb-3">{{ error }}</div>
++
++      <button class="btn btn-primary w-100" type="submit" :disabled="loading || !username || !password">
++        {{ loading ? '로그인 중…' : '로그인' }}
++      </button>
++
++      <p class="hint">
++        처음이면 백엔드 서버 콘솔(IntelliJ)에 찍힌 <b>관리자 계정</b>으로 로그인하세요.
++      </p>
++    </form>
++  </div>
++</template>
++
++<script setup>
++import { ref } from 'vue';
++import { useRoute } from 'vue-router';
++import { login } from '../api/backendApi';
++import { saveSession } from '../auth';
++import { apiError } from '../utils/format';
++
++const route = useRoute();
++
++const username = ref('admin');
++const password = ref('');
++const loading = ref(false);
++const error = ref('');
++
++// 로그인 전에 가려던 화면으로 돌려보낸다. 외부 주소로 튕기지 않도록 우리 사이트 경로만 허용
++const redirectTarget = () => {
++  const r = route.query.redirect;
++  return typeof r === 'string' && r.startsWith('/') && !r.startsWith('//') && !r.startsWith('/login')
++    ? r
++    : '/screener';
++};
++
++const submit = async () => {
++  loading.value = true;
++  error.value = '';
++  try {
++    const res = await login(username.value.trim(), password.value);
++    saveSession({ token: res.token, username: res.username, expiresAt: res.expiresAt });
++    // 새로고침으로 이동: 화면들이 토큰을 가진 상태로 처음부터 데이터를 불러오도록
++    window.location.assign(redirectTarget());
++  } catch (e) {
++    error.value = apiError(e, '로그인 실패');
++    password.value = '';
++  } finally {
++    loading.value = false;
++  }
++};
++</script>
++
++<style scoped>
++.login-wrap {
++  min-height: 70vh;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  padding: 16px;
++}
++
++.login-card {
++  text-align: left;
++  width: 100%;
++  max-width: 380px;
++  background: #161b22;
++  border: 1px solid #30363d;
++  border-radius: 12px;
++  padding: 28px 24px;
++}
++
++.login-card h2 {
++  margin: 0;
++  font-size: 1.4rem;
++}
++
++.sub {
++  color: #8b949e;
++  margin: 4px 0 20px;
++}
++
++.field {
++  display: block;
++  margin-bottom: 14px;
++  font-size: 0.9rem;
++}
++
++.field span {
++  display: block;
++  color: #c9d1d9;
++  margin-bottom: 4px;
++}
++
++.field input {
++  width: 100%;
++  background: #0d1117;
++  color: white;
++  border: 1px solid #30363d;
++  border-radius: 6px;
++  padding: 8px 10px;
++}
++
++.field input:focus {
++  outline: none;
++  border-color: #3b82f6;
++}
++
++.hint {
++  color: #6e7681;
++  font-size: 0.8rem;
++  margin: 14px 0 0;
++}
++</style>
+diff --git a/frontend/src/views/SettingsView.vue b/frontend/src/views/SettingsView.vue
+index a24f3a1..7bc3e29 100644
+--- a/frontend/src/views/SettingsView.vue
++++ b/frontend/src/views/SettingsView.vue
+@@ -1,17 +1,449 @@
+ <template>
+-  <!-- TODO: 3단계 이후 에서 구현 -->
+-  <div class="placeholder-card">
+-    <h4>설정</h4>
+-    <p class="text-secondary mb-1">매도 규칙(익절·손절·트레일링), 리스크 한도, 모의/실매매 전환, 업비트 키 상태</p>
+-    <small class="text-secondary">3단계 이후 에서 구현 예정</small>
++  <div class="settings-view">
++
++    <div v-if="loadError" class="alert alert-warning py-2">{{ loadError }}</div>
++
++    <div v-if="form" class="row g-3">
++
++      <!-- 에이전트 -->
++      <div class="col-xl-6">
++        <section class="card-box">
++          <h5>에이전트</h5>
++
++          <div class="pause" :class="{ on: form.buyingPaused }">
++            <div>
++              <b>모든 전략 신규 매수 중단</b>
++              <p>켜면 실행 중인 전략도 새로 사지 않아요. 보유 종목은 익절·손절 규칙대로 계속 관리해요.</p>
++            </div>
++            <label class="switch">
++              <input v-model="form.buyingPaused" type="checkbox" aria-label="신규 매수 전체 중단" />
++              <span></span>
++            </label>
++          </div>
++
++          <div class="row g-2 mt-1">
++            <label class="col-sm-4 field">
++              <span>거래 수수료 (%)</span>
++              <input v-model.number="form.feePct" type="number" min="0" max="1" step="0.01" />
++              <small>업비트 KRW 마켓 0.05%</small>
++            </label>
++            <label class="col-sm-4 field">
++              <span>모의 체결가 불리 (%)</span>
++              <input v-model.number="form.slippagePct" type="number" min="0" max="2" step="0.05" />
++              <small>살 때 비싸게, 팔 때 싸게</small>
++            </label>
++            <label class="col-sm-4 field">
++              <span>재진입 대기 (분)</span>
++              <input v-model.number="form.reentryCooldownMinutes" type="number" min="0" step="10" />
++              <small>판 종목을 다시 안 사는 시간</small>
++            </label>
++          </div>
++          <p class="note">모의매매와 백테스트에 같이 적용돼요. 판단 주기(1분)는 서버 설정(application.yml)에서 바꿔요.</p>
++        </section>
++      </div>
++
++      <!-- 새 전략 기본값 -->
++      <div class="col-xl-6">
++        <section class="card-box">
++          <h5>새 전략 기본값</h5>
++          <p class="note mt-0">"이 조건으로 에이전트 시작" 창에 처음 채워지는 값이에요. 빈칸은 그 규칙을 끈 상태로 시작해요.</p>
++          <div class="row g-2">
++            <label class="col-sm-6 field">
++              <span>1회 매수 금액 (원)</span>
++              <input v-model.number="form.d.orderKrw" type="number" min="5000" step="1000" />
++            </label>
++            <label class="col-sm-6 field">
++              <span>최대 보유 종목 수</span>
++              <input v-model.number="form.d.maxPositions" type="number" min="1" max="10" />
++            </label>
++            <label class="col-sm-4 field">
++              <span>익절 +%</span>
++              <input v-model.number="form.d.takeProfitPct" type="number" min="0" step="0.5" placeholder="안 씀" />
++            </label>
++            <label class="col-sm-4 field">
++              <span>손절 -%</span>
++              <input v-model.number="form.d.stopLossPct" type="number" min="0" step="0.5" placeholder="안 씀" />
++            </label>
++            <label class="col-sm-4 field">
++              <span>트레일링 -%</span>
++              <input v-model.number="form.d.trailingStopPct" type="number" min="0" step="0.5" placeholder="안 씀" />
++            </label>
++            <label class="col-sm-6 field">
++              <span>최대 보유 시간</span>
++              <input v-model.number="form.d.maxHoldHours" type="number" min="1" placeholder="안 씀" />
++            </label>
++            <label class="col-sm-6 field">
++              <span>일일 손실 한도 (원)</span>
++              <input v-model.number="form.d.dailyLossLimitKrw" type="number" min="0" step="1000" placeholder="안 씀" />
++            </label>
++          </div>
++        </section>
++      </div>
++    </div>
++
++    <!-- 저장 -->
++    <div v-if="form" class="save-bar">
++      <span v-if="saveError" class="text-warning">{{ saveError }}</span>
++      <span v-else-if="dirty" class="text-secondary">저장하지 않은 변경이 있어요</span>
++      <span v-else-if="savedAt" class="text-secondary">{{ formatTime(savedAt) }} 저장됨</span>
++      <button class="btn btn-outline-secondary btn-sm" :disabled="saving || !dirty" @click="reset">되돌리기</button>
++      <button class="btn btn-primary btn-sm px-3" :disabled="saving || !dirty" @click="save">
++        {{ saving ? '저장 중…' : '저장' }}
++      </button>
++    </div>
++
++    <div class="row g-3 mt-1">
++      <!-- 계정 -->
++      <div class="col-xl-6">
++        <section class="card-box">
++          <h5>계정</h5>
++          <p class="note mt-0">로그인: <b>{{ auth.session?.username }}</b> · 로그인 유지 {{ expiresText }}</p>
++
++          <form class="row g-2" @submit.prevent="submitPassword">
++            <label class="col-sm-4 field">
++              <span>현재 비밀번호</span>
++              <input v-model="pw.current" type="password" autocomplete="current-password" required />
++            </label>
++            <label class="col-sm-4 field">
++              <span>새 비밀번호 (8자 이상)</span>
++              <input v-model="pw.next" type="password" autocomplete="new-password" minlength="8" required />
++            </label>
++            <label class="col-sm-4 field">
++              <span>새 비밀번호 확인</span>
++              <input v-model="pw.confirm" type="password" autocomplete="new-password" minlength="8" required />
++            </label>
++            <div class="col-12 d-flex align-items-center gap-2">
++              <button class="btn btn-outline-light btn-sm" type="submit" :disabled="pwSaving">
++                {{ pwSaving ? '변경 중…' : '비밀번호 변경' }}
++              </button>
++              <span v-if="pwError" class="text-warning small">{{ pwError }}</span>
++              <span v-else-if="pwDone" class="text-success small">변경했어요. 다른 브라우저의 로그인은 풀려요.</span>
++            </div>
++          </form>
++        </section>
++      </div>
++
++      <!-- 시스템 상태 -->
++      <div class="col-xl-6">
++        <section class="card-box">
++          <div class="d-flex justify-content-between align-items-center">
++            <h5 class="mb-0">시스템 상태</h5>
++            <button class="btn btn-sm btn-outline-secondary" @click="loadStatus">새로고침</button>
++          </div>
++
++          <div v-if="status" class="status">
++            <div class="row-s"><span>서버 시작</span><b>{{ formatDateTime(status.serverStartedAt) }}</b></div>
++            <div class="row-s">
++              <span>시세 수집</span>
++              <b>{{ status.collector.marketCount }}종목 · 현재가 {{ status.collector.tickerUpdatedAt ? formatTime(status.collector.tickerUpdatedAt) + ' 갱신' : '대기 중' }}</b>
++            </div>
++            <div v-if="status.collector.collecting" class="row-s">
++              <span>지금 수집 중</span>
++              <b>{{ status.collector.collecting.label }} {{ status.collector.collecting.done }}/{{ status.collector.collecting.total }}</b>
++            </div>
++            <div v-for="(u, key) in status.collector.units" :key="key" class="row-s">
++              <span>{{ u.label }}</span>
++              <b :class="u.ready ? 'ok' : 'wait'">
++                {{ u.ready ? '준비됨' : '수집 대기' }}<template v-if="u.updatedAt"> · {{ formatTime(u.updatedAt) }}</template>
++              </b>
++            </div>
++            <div class="row-s">
++              <span>자연어 검색</span>
++              <b :class="status.naturalSearchEnabled ? 'ok' : 'wait'">
++                {{ status.naturalSearchEnabled ? '사용 가능' : 'API 키 없음 (ANTHROPIC_API_KEY)' }}
++              </b>
++            </div>
++            <div class="row-s">
++              <span>매매 방식</span>
++              <b>모의매매만 지원 (실매매 미연결)</b>
++            </div>
++          </div>
++        </section>
++      </div>
++    </div>
++
+   </div>
+ </template>
+ 
++<script setup>
++import { ref, reactive, computed, onActivated } from 'vue';
++import { getSettings, saveSettings, systemStatus, changePassword } from '../api/backendApi';
++import { auth, saveSession } from '../auth';
++import { formatTime, formatDateTime, apiError } from '../utils/format';
++
++const form = ref(null);
++let original = '';
++const loadError = ref('');
++const saving = ref(false);
++const saveError = ref('');
++const savedAt = ref(null);
++const status = ref(null);
++
++// 서버 형식(비율) ↔ 화면 형식(%)
++// 0.0005 → 0.05(%). 부동소수점 오차(0.049999…)가 보이지 않게 반올림
++const toPct = (rate) => Math.round(rate * 100 * 10000) / 10000;
++
++const toForm = (s) => ({
++  buyingPaused: s.buyingPaused,
++  feePct: toPct(s.feeRate),
++  slippagePct: toPct(s.paperSlippage),
++  reentryCooldownMinutes: s.reentryCooldownMinutes,
++  d: { ...s.strategyDefaults }
++});
++
++// 빈칸('') → null
++const num = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : null);
++
++const toServer = (f) => ({
++  buyingPaused: f.buyingPaused,
++  feeRate: (num(f.feePct) ?? 0) / 100,
++  paperSlippage: (num(f.slippagePct) ?? 0) / 100,
++  reentryCooldownMinutes: num(f.reentryCooldownMinutes) ?? 0,
++  strategyDefaults: Object.fromEntries(Object.entries(f.d).map(([k, v]) => [k, num(v)]))
++});
++
++const dirty = computed(() => !!form.value && JSON.stringify(toServer(form.value)) !== original);
++
++const apply = (s) => {
++  form.value = toForm(s);
++  original = JSON.stringify(toServer(form.value));
++};
++
++const load = async () => {
++  try {
++    apply(await getSettings());
++    loadError.value = '';
++  } catch (e) {
++    loadError.value = apiError(e, '설정을 불러오지 못했어요');
++  }
++};
++
++const loadStatus = async () => {
++  try {
++    status.value = await systemStatus();
++  } catch {
++    // 상태는 못 불러와도 설정 화면은 쓸 수 있게
++  }
++};
++
++// 탭을 열 때마다 최신 값으로 (저장 안 한 변경이 있으면 덮어쓰지 않음)
++// KeepAlive 안에서는 처음 열릴 때도 onActivated 가 호출된다
++onActivated(() => {
++  if (!dirty.value) load();
++  loadStatus();
++});
++
++const save = async () => {
++  saving.value = true;
++  saveError.value = '';
++  try {
++    apply(await saveSettings(toServer(form.value)));
++    savedAt.value = Date.now();
++  } catch (e) {
++    saveError.value = apiError(e, '저장 실패');
++  } finally {
++    saving.value = false;
++  }
++};
++
++const reset = () => {
++  const s = JSON.parse(original);
++  form.value = toForm(s);
++  saveError.value = '';
++};
++
++// ---------- 비밀번호 ----------
++const pw = reactive({ current: '', next: '', confirm: '' });
++const pwSaving = ref(false);
++const pwError = ref('');
++const pwDone = ref(false);
++
++const submitPassword = async () => {
++  pwError.value = '';
++  pwDone.value = false;
++  if (pw.next !== pw.confirm) {
++    pwError.value = '새 비밀번호 확인이 일치하지 않아요.';
++    return;
++  }
++  pwSaving.value = true;
++  try {
++    const res = await changePassword(pw.current, pw.next);
++    // 비밀번호를 바꾸면 예전 토큰은 서버에서 거부되므로 새 토큰으로 교체
++    saveSession({ token: res.token, username: res.username, expiresAt: res.expiresAt });
++    Object.assign(pw, { current: '', next: '', confirm: '' });
++    pwDone.value = true;
++  } catch (e) {
++    pwError.value = apiError(e, '변경 실패');
++  } finally {
++    pwSaving.value = false;
++  }
++};
++
++const expiresText = computed(() =>
++  auth.session ? formatDateTime(auth.session.expiresAt) + '까지' : ''
++);
++</script>
++
+ <style scoped>
+-.placeholder-card {
+-  background-color: #161b22;
++.settings-view {
++  text-align: left;
++}
++
++.card-box {
++  background: #161b22;
+   border-radius: 12px;
+-  padding: 40px 24px;
+-  text-align: center;
++  padding: 16px 18px;
++  height: 100%;
++}
++
++.card-box h5 {
++  margin-bottom: 12px;
++}
++
++.pause {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  gap: 12px;
++  background: #0d1117;
++  border: 1px solid #30363d;
++  border-radius: 10px;
++  padding: 12px 14px;
++}
++
++.pause.on {
++  border-color: #f0b429;
++  background: rgba(240, 180, 41, 0.08);
++}
++
++.pause p {
++  margin: 2px 0 0;
++  color: #8b949e;
++  font-size: 0.82rem;
++}
++
++/* 토글 스위치 */
++.switch {
++  position: relative;
++  width: 44px;
++  height: 24px;
++  flex-shrink: 0;
++}
++
++.switch input {
++  position: absolute;
++  inset: 0;
++  opacity: 0;
++  cursor: pointer;
++  margin: 0;
++  z-index: 1;
++}
++
++.switch span {
++  position: absolute;
++  inset: 0;
++  background: #30363d;
++  border-radius: 12px;
++  transition: background 0.2s;
++}
++
++.switch span::after {
++  content: '';
++  position: absolute;
++  top: 3px;
++  left: 3px;
++  width: 18px;
++  height: 18px;
++  background: white;
++  border-radius: 50%;
++  transition: transform 0.2s;
++}
++
++.switch input:checked + span {
++  background: #f0b429;
++}
++
++.switch input:checked + span::after {
++  transform: translateX(20px);
++}
++
++.switch input:focus-visible + span {
++  outline: 2px solid #3b82f6;
++  outline-offset: 2px;
++}
++
++.field {
++  font-size: 0.85rem;
++}
++
++.field > span {
++  display: block;
++  color: #c9d1d9;
++  margin-bottom: 4px;
++}
++
++.field small {
++  display: block;
++  color: #6e7681;
++  margin-top: 2px;
++}
++
++.field input {
++  width: 100%;
++  background: #0d1117;
++  color: white;
++  border: 1px solid #30363d;
++  border-radius: 6px;
++  padding: 6px 8px;
++}
++
++.field input:focus {
++  outline: none;
++  border-color: #3b82f6;
++}
++
++.note {
++  color: #6e7681;
++  font-size: 0.8rem;
++  margin: 10px 0 0;
++}
++
++.save-bar {
++  display: flex;
++  justify-content: flex-end;
++  align-items: center;
++  gap: 10px;
++  margin-top: 12px;
++  font-size: 0.85rem;
++}
++
++.status {
++  margin-top: 10px;
++  font-size: 0.85rem;
++}
++
++.row-s {
++  display: flex;
++  justify-content: space-between;
++  gap: 12px;
++  padding: 6px 0;
++  border-bottom: 1px solid #21262d;
++}
++
++.row-s span {
++  color: #8b949e;
++}
++
++.row-s b {
++  font-weight: 500;
++  text-align: right;
++}
++
++.ok {
++  color: #4ade80;
++}
++
++.wait {
++  color: #f0b429;
+ }
+ </style>
+-- 
+2.43.0
+
