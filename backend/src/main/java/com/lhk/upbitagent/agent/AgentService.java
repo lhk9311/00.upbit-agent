@@ -5,17 +5,19 @@ import com.lhk.upbitagent.market.MarketDataStore;
 import com.lhk.upbitagent.screener.ScreenerCondition;
 import com.lhk.upbitagent.screener.ScreenerEngine;
 import com.lhk.upbitagent.screener.ScreenerResult;
+import com.lhk.upbitagent.settings.AppSettings;
+import com.lhk.upbitagent.settings.SettingsService;
 import com.lhk.upbitagent.store.AgentLogRepository;
 import com.lhk.upbitagent.store.StrategyRepository;
 import com.lhk.upbitagent.store.TradeRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -38,25 +40,26 @@ public class AgentService {
     private final TradeRepository trades;
     private final AgentLogRepository logs;
     private final MarketDataStore market;
-    private final AgentEngine engine;
+    /** 수수료·슬리피지·재진입 대기·전체 매수 중단은 설정 탭 값을 매 주기 읽어서 쓴다 */
+    private final SettingsService settings;
     private final ScreenerEngine screener = new ScreenerEngine();
-    private final long cooldownMs;
 
     /** 같은 안내 문구를 매 주기 반복해서 기록하지 않기 위한 마지막 문구 */
     private final Map<Long, String> lastNote = new HashMap<>();
     private boolean staleWarned = false;
 
     public AgentService(StrategyRepository strategies, TradeRepository trades, AgentLogRepository logs,
-                        MarketDataStore market,
-                        @Value("${agent.fee-rate:0.0005}") double feeRate,
-                        @Value("${agent.paper-slippage:0.001}") double slippage,
-                        @Value("${agent.reentry-cooldown-minutes:60}") long cooldownMinutes) {
+                        MarketDataStore market, SettingsService settings) {
         this.strategies = strategies;
         this.trades = trades;
         this.logs = logs;
         this.market = market;
-        this.engine = new AgentEngine(new AgentEngine.Config(feeRate, slippage));
-        this.cooldownMs = cooldownMinutes * 60_000;
+        this.settings = settings;
+    }
+
+    /** 지금 설정값(수수료·슬리피지)으로 만든 판단 엔진. 만드는 비용이 거의 없어 필요할 때마다 만든다 */
+    private AgentEngine engine() {
+        return new AgentEngine(settings.get().agentConfig());
     }
 
     // ---------- 주기 실행 ----------
@@ -79,10 +82,12 @@ public class AgentService {
 
         Map<String, Double> prices = market.prices();
         long now = System.currentTimeMillis();
+        AppSettings app = settings.get();
+        AgentEngine engine = new AgentEngine(app.agentConfig());
 
         for (Strategy s : strategies.findAll()) {
             try {
-                runStrategy(s, prices, now);
+                runStrategy(s, prices, now, app, engine);
             } catch (Exception e) {
                 log.error("전략 {} 실행 실패", s.id(), e);
                 logs.add(s.id(), "WARN", "[" + s.name() + "] 실행 중 오류: " + e.getMessage());
@@ -90,9 +95,18 @@ public class AgentService {
         }
     }
 
-    private void runStrategy(Strategy s, Map<String, Double> prices, long now) {
+    private void runStrategy(Strategy original, Map<String, Double> prices, long now,
+                             AppSettings app, AgentEngine engine) {
+        // 설정 탭에서 "신규 매수 전체 중단"을 켰으면, 실행 중인 전략도 이번 주기엔 정지된 것처럼 판단
+        // (정지된 전략은 매수는 안 하고 보유 종목 매도 규칙만 계속 확인한다)
+        boolean pausedBySettings = app.buyingPaused() && original.enabled();
+        Strategy s = pausedBySettings ? original.withEnabled(false) : original;
+
         List<Trade> open = trades.findOpenByStrategy(s.id());
         if (!s.enabled() && open.isEmpty()) {
+            if (pausedBySettings) {
+                note(s, "설정에서 신규 매수 전체 중단 중");
+            }
             return;
         }
 
@@ -106,7 +120,7 @@ public class AgentService {
         }
 
         double todayPnl = trades.realizedPnlSince(s.id(), startOfTodayKst());
-        Set<String> cooldown = trades.soldMarketsSince(s.id(), now - cooldownMs);
+        Set<String> cooldown = trades.soldMarketsSince(s.id(), now - app.reentryCooldownMs());
 
         AgentEngine.Decision d = engine.decide(s, open, prices, candidates, todayPnl, cooldown, now);
 
@@ -115,7 +129,7 @@ public class AgentService {
         }
 
         for (AgentEngine.SellOrder order : d.sells()) {
-            sell(order.trade(), order.marketPrice(), order.reason(), now);
+            sell(order.trade(), order.marketPrice(), order.reason(), now, engine);
         }
 
         for (AgentEngine.BuyOrder order : d.buys()) {
@@ -129,14 +143,18 @@ public class AgentService {
                     s.name(), t.koreanName(), price(t.buyPrice()), qty(t.quantity()), t.cost()));
         }
 
-        if (!d.notes().isEmpty()) {
-            note(s, String.join(" / ", d.notes()));
+        List<String> notes = new ArrayList<>(d.notes());
+        if (pausedBySettings) {
+            notes.add(0, "설정에서 신규 매수 전체 중단 중");
+        }
+        if (!notes.isEmpty()) {
+            note(s, String.join(" / ", notes));
         } else {
             lastNote.remove(s.id());
         }
     }
 
-    private void sell(Trade t, double marketPrice, String reason, long now) {
+    private void sell(Trade t, double marketPrice, String reason, long now, AgentEngine engine) {
         Trade closed = engine.closeTrade(t, marketPrice, reason, now);
         if (trades.close(closed)) {
             logs.add(t.strategyId(), "SELL", String.format(Locale.ROOT, "[%s] %s 매도 %s원 · %s · %+.2f%% (%+,.0f원)",
@@ -164,13 +182,14 @@ public class AgentService {
         if (p == null) {
             throw new IllegalStateException("현재가를 아직 받지 못했어요. 잠시 후 다시 시도해주세요.");
         }
-        sell(t, p, "수동 매도", System.currentTimeMillis());
+        sell(t, p, "수동 매도", System.currentTimeMillis(), engine());
         return trades.findById(tradeId).orElseThrow();
     }
 
     /** 진행 중 거래 + 지금 팔면 얼마인지(수수료·슬리피지 반영) */
     public List<Position> positions() {
         long now = System.currentTimeMillis();
+        AgentEngine engine = engine();
         return trades.findOpen().stream().map(t -> {
             Double p = market.price(t.market());
             if (p == null) {

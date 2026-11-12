@@ -30,6 +30,22 @@ collector:
   # 종목당 가져올 캔들 수 (업비트 최대 200)
   candle-count: 200
 
+# 로그인
+app:
+  auth:
+    # 처음 서버를 켤 때 계정이 하나도 없으면 이 아이디로 관리자 계정을 만든다
+    initial-username: admin
+    # 비워두면 무작위 비밀번호를 만들어 콘솔 로그에 한 번 보여준다 → 설정 탭에서 바꾸기
+    initial-password: ${ADMIN_PASSWORD:}
+    # 비밀번호를 잊었을 때만 true 로 켜고 서버 재시작 → 관리자 비밀번호를 다시 만든다 (끝나면 다시 false)
+    reset-on-start: ${ADMIN_RESET:false}
+  jwt:
+    # 토큰 서명 키 (32자 이상). 비워두면 서버를 켤 때마다 새로 만들어서, 재시작하면 다시 로그인해야 한다
+    secret: ${JWT_SECRET:}
+    # 로그인 유지 시간
+    expiry-hours: 12
+
+# 아래 값은 "처음 기본값"이다. 서버를 켠 뒤에는 설정 탭에서 바꾼 값(DB)이 우선한다
 agent:
   # 에이전트 판단 주기(ms)
   cycle-ms: 60000

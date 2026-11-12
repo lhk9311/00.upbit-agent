@@ -1,14 +1,14 @@
 package com.lhk.upbitagent.web;
 
-import com.lhk.upbitagent.agent.AgentEngine;
 import com.lhk.upbitagent.agent.Strategy;
 import com.lhk.upbitagent.agent.StrategyRequest;
 import com.lhk.upbitagent.backtest.BacktestEngine;
 import com.lhk.upbitagent.domain.CandleUnit;
 import com.lhk.upbitagent.market.MarketDataStore;
+import com.lhk.upbitagent.settings.AppSettings;
+import com.lhk.upbitagent.settings.SettingsService;
 import com.lhk.upbitagent.store.StrategyRepository;
 import com.lhk.upbitagent.upbit.UpbitDtos.UpbitMarket;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -32,15 +32,12 @@ public class BacktestController {
 
     private final MarketDataStore market;
     private final StrategyRepository strategies;
-    private final BacktestEngine engine;
+    private final SettingsService settings;
 
-    public BacktestController(MarketDataStore market, StrategyRepository strategies,
-                              @Value("${agent.fee-rate:0.0005}") double feeRate,
-                              @Value("${agent.paper-slippage:0.001}") double slippage,
-                              @Value("${agent.reentry-cooldown-minutes:60}") long cooldownMinutes) {
+    public BacktestController(MarketDataStore market, StrategyRepository strategies, SettingsService settings) {
         this.market = market;
         this.strategies = strategies;
-        this.engine = new BacktestEngine(new AgentEngine.Config(feeRate, slippage), cooldownMinutes * 60_000);
+        this.settings = settings;
     }
 
     /** 저장하기 전 전략으로 백테스트 (전략 설정 창에서 사용) */
@@ -71,6 +68,9 @@ public class BacktestController {
                 warnings.add(m.market());
             }
         }
+        // 수수료·슬리피지·재진입 대기는 설정 탭 값 그대로 (실제 에이전트와 같은 조건으로 비교하기 위함)
+        AppSettings app = settings.get();
+        BacktestEngine engine = new BacktestEngine(app.agentConfig(), app.reentryCooldownMs());
         return engine.run(s, unit, market.candles(unit), names, warnings);
     }
 

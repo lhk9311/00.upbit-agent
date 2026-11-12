@@ -1,10 +1,26 @@
 import axios from 'axios';
+import { installAuth } from '../auth';
 
-// 우리 백엔드(Spring Boot). 개발 중엔 Vite proxy, 배포 땐 nginx 가 /api 를 넘겨준다.
+// 우리 백엔드(Spring Boot). 개발 중엔 Vite proxy 가 /api 를 8080 으로 넘겨준다.
 const backend = axios.create({
   baseURL: '/api',
   timeout: 10000
 });
+
+// 모든 요청에 로그인 토큰을 붙이고, 401 이면 로그인 화면으로
+installAuth(backend);
+
+// ---------- 로그인 ----------
+export const login = (username, password) =>
+  backend.post('/auth/login', { username, password }).then(res => res.data);
+
+export const changePassword = (currentPassword, newPassword) =>
+  backend.post('/auth/password', { currentPassword, newPassword }).then(res => res.data);
+
+// ---------- 설정 ----------
+export const getSettings = () => backend.get('/settings').then(res => res.data);
+export const saveSettings = (settings) => backend.put('/settings', settings).then(res => res.data);
+export const systemStatus = () => backend.get('/system/status').then(res => res.data);
 
 export const screen = (condition) =>
   backend.post('/screener', condition).then(res => res.data);

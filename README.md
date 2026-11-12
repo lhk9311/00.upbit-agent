@@ -19,7 +19,7 @@ upbit-agent/
 | 4 | 에이전트 현황 탭 (실시간 평가손익) | ✅ |
 | 5 | 백테스트 | ✅ |
 | 6 | 실주문 연결 (업비트 키, IP 허용, 한도) | ⏳ |
-| 7 | 로그인, 배포 | ⏳ |
+| 7 | 로그인(Spring Security + JWT), 설정 탭 | ✅ (배포는 하지 않음) |
 
 ## 실행
 
@@ -70,7 +70,7 @@ npm run dev           # → http://localhost:5173
 - **실시간 시세**: 기존 `00.upbit-chart` 화면 (코인 목록 + 차트)
 - **에이전트 현황**: 보유 평가손익·오늘/누적 실현손익·승률, 보유 종목(평가수익률, 수동 매도), 활동 기록, 전략 시작·정지·삭제 (5초마다 갱신)
 - **투자 히스토리**: 전체 거래. 완료 거래는 매수·매도 가격 모두, 진행 중 거래는 매수 가격만. 종목명·매수일시·매수가·매도일시·매도가·수익률·손익 정렬, 상태·전략·기간 필터
-- **설정**: 이후 단계에서 구현
+- **설정**: 모든 전략 신규 매수 중단 스위치, 수수료·모의 체결가 불리·재진입 대기, 새 전략 기본값, 비밀번호 변경, 시스템 상태(수집 진행률 등)
 
 수익률·손익은 한국 관례대로 **플러스 빨강, 마이너스 파랑**.
 
@@ -112,8 +112,38 @@ npm run dev           # → http://localhost:5173
 개발용 **H2 파일 DB**를 쓴다. 설치가 필요 없고, `backend/data/`에 저장돼 서버를 꺼도 기록이 남는다 (깃에는 올라가지 않음).
 
 - DB 콘솔: http://localhost:8080/h2-console (JDBC URL `jdbc:h2:file:./data/upbit-agent;MODE=MySQL;AUTO_SERVER=TRUE`, 사용자 `sa`, 비밀번호 없음)
-- 테이블: `strategy`(전략), `trade`(거래), `agent_log`(활동 기록) — `schema.sql`
+- 테이블: `strategy`(전략), `trade`(거래), `agent_log`(활동 기록), `app_user`(로그인 계정), `app_setting`(설정) — `schema.sql`
 - 배포 때 MariaDB로 바꾸려면 `build.gradle`의 H2 를 MariaDB 드라이버로, `application.yml`의 datasource 를 MariaDB 주소로 바꾸면 된다 (SQL 은 둘 다에서 동작하도록 작성).
+
+## 로그인 (Spring Security + JWT)
+
+처음 서버를 켜면 관리자 계정(`admin`)이 자동으로 만들어지고, **비밀번호가 콘솔 로그에 한 번 찍힌다.**
+```
+==================================================
+  관리자 계정을 만들었어요
+  아이디   : admin
+  비밀번호 : xxxxxxxxxxxx
+==================================================
+```
+로그인 후 설정 탭에서 비밀번호를 바꾸면 된다.
+
+| 환경변수 | 설명 |
+|---|---|
+| `ADMIN_PASSWORD` | 처음 만들 관리자 비밀번호 (없으면 무작위) |
+| `ADMIN_RESET=true` | 비밀번호를 잊었을 때. 켜고 재시작하면 관리자 비밀번호를 다시 만든다 → 끝나면 꼭 끄기 |
+| `JWT_SECRET` | 토큰 서명 키(32자 이상). 없으면 재시작할 때마다 새로 만들어져 다시 로그인해야 함 |
+
+흐름
+```
+로그인: POST /api/auth/login → AuthenticationManager(UserDetailsService + BCrypt) → JWT 발급
+요청  : Authorization: Bearer <토큰> → JwtAuthFilter 가 서명·만료 확인 → 통과하면 로그인 사용자로 표시
+       → SecurityConfig 규칙(/api/auth/login 외에는 전부 로그인 필요) → 컨트롤러
+```
+- 세션을 만들지 않는다(STATELESS). 서버는 로그인 상태를 기억하지 않고, 매 요청 토큰 서명만 확인한다.
+- 비밀번호는 BCrypt 해시로만 저장한다 (`app_user` 테이블).
+- 같은 아이디로 10분 안에 5번 틀리면 10분 잠금 (`LoginAttemptLimiter`).
+- 비밀번호를 바꾸면 그 전에 발급된 토큰은 모두 무효가 된다 (`password_changed_at`).
+- 화면은 토큰을 localStorage 에 저장하고, axios 인터셉터가 모든 요청에 붙인다. 401 이면 로그인 화면으로.
 
 ## 자연어 검색
 
@@ -152,6 +182,14 @@ POST /api/screener              조건 검색 (요청 예시는 아래)
 POST /api/screener/parse        자연어 → 조건 변환 { "text": "..." }
 GET  /api/screener/parse/status 자연어 검색 사용 가능 여부 (API 키 설정 여부)
 GET  /api/collector/status      수집 현황
+
+POST /api/auth/login             로그인 → { token, username, expiresAt } (로그인 없이 호출 가능)
+GET  /api/auth/me                지금 로그인한 사용자
+POST /api/auth/password          비밀번호 변경 → 새 토큰
+GET  /api/settings               설정 조회
+PUT  /api/settings               설정 저장
+GET  /api/system/status          시스템 상태
+(위 로그인 API 를 뺀 모든 API 는 Authorization: Bearer <토큰> 필요)
 
 GET  /api/strategies             전략 목록
 POST /api/strategies             전략 저장 (+ 바로 실행)

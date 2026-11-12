@@ -101,7 +101,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated } from 'vue';
 import api from '../api/upbitApi';
 
 // 부모(App.vue)에게 이벤트 전달
@@ -206,6 +206,10 @@ let refreshTimer = null;
 
 // 현재가 조회: 마켓 전체를 한 번의 요청으로 가져온다
 const loadTickers = async () => {
+  // 마켓 목록을 아직 못 받았으면 요청할 종목이 없다
+  if (!krwMarkets.length) {
+    return;
+  }
   try {
     const tickerRes = await api.get('/ticker', {
       params: {
@@ -246,7 +250,7 @@ const loadTickers = async () => {
   }
 };
 
-// 최초 조회 + 주기적 갱신
+// 최초 조회 (마켓 목록은 한 번만)
 onMounted(async () => {
   try {
     const marketRes = await api.get('/market/all');
@@ -257,16 +261,34 @@ onMounted(async () => {
 
     await loadTickers();
 
-    refreshTimer = setInterval(loadTickers, REFRESH_MS);
-
   } catch (error) {
     console.error(error);
   }
 });
 
-onBeforeUnmount(() => {
-  clearInterval(refreshTimer);
+// 주기적 갱신은 이 탭이 "보일 때만"
+// 상단 탭은 KeepAlive 라 다른 탭으로 가도 화면이 살아 있어서, 그냥 두면 안 보이는 동안에도 3초마다 요청한다
+// onActivated : 탭이 보일 때 (처음 열릴 때 포함)
+// onDeactivated : 다른 탭으로 갔을 때
+const startPolling = () => {
+  stopPolling();
+  refreshTimer = setInterval(loadTickers, REFRESH_MS);
+};
+
+const stopPolling = () => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+};
+
+onActivated(() => {
+  loadTickers(); // 돌아오자마자 최신 값으로
+  startPolling();
 });
+
+onDeactivated(stopPolling);
+onBeforeUnmount(stopPolling);
 </script>
 
 <style scoped>

@@ -26,4 +26,11 @@ public record Strategy(
         boolean enabled,
         Long createdAt
 ) {
+
+    /** enabled 만 바꾼 복사본 (record 는 값을 못 바꾸므로 새로 만든다) */
+    public Strategy withEnabled(boolean value) {
+        return new Strategy(id, name, condition, naturalText, orderKrw, maxPositions,
+                takeProfitPct, stopLossPct, trailingStopPct, maxHoldHours, dailyLossLimitKrw,
+                mode, value, createdAt);
+    }
 }

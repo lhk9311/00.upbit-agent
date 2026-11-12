@@ -1,27 +1,36 @@
 <template>
   <div class="container-fluid app-container">
 
-    <h1 class="main-title">
-      업비트 에이전트
-    </h1>
+    <!-- 로그인 화면에서는 머리말·탭을 숨긴다 -->
+    <template v-if="!route.meta.public">
+      <!-- 로그인한 사용자 + 로그아웃 -->
+      <div class="user-bar">
+        <span class="text-secondary">{{ auth.session?.username }}</span>
+        <button class="btn btn-sm btn-outline-secondary" @click="logout">로그아웃</button>
+      </div>
 
-    <!-- 현재 날짜·시간 -->
-    <p class="now-clock">
-      {{ nowText }}
-    </p>
+      <h1 class="main-title">
+        업비트 에이전트
+      </h1>
 
-    <!-- 상단 탭 -->
-    <ul class="nav nav-tabs app-tabs">
-      <li v-for="tab in tabs" :key="tab.path" class="nav-item">
-        <RouterLink :to="tab.path" class="nav-link" active-class="active">
-          {{ tab.label }}
-        </RouterLink>
-      </li>
-    </ul>
+      <!-- 현재 날짜·시간 -->
+      <p class="now-clock">
+        {{ nowText }}
+      </p>
 
-    <!-- 탭 내용. KeepAlive: 탭을 오가도 검색 조건·결과가 유지되도록 -->
+      <!-- 상단 탭 -->
+      <ul class="nav nav-tabs app-tabs">
+        <li v-for="tab in tabs" :key="tab.path" class="nav-item">
+          <RouterLink :to="tab.path" class="nav-link" active-class="active">
+            {{ tab.label }}
+          </RouterLink>
+        </li>
+      </ul>
+    </template>
+
+    <!-- 탭 내용. KeepAlive: 탭을 오가도 검색 조건·결과가 유지되도록 (로그인 화면은 제외) -->
     <RouterView v-slot="{ Component }">
-      <KeepAlive>
+      <KeepAlive exclude="LoginView">
         <component :is="Component" />
       </KeepAlive>
     </RouterView>
@@ -31,7 +40,11 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { useRoute } from 'vue-router';
 import { tabs } from './router';
+import { auth, logout } from './auth';
+
+const route = useRoute();
 
 // ---------- 현재 날짜·시간 ----------
 const nowText = ref('');
@@ -75,6 +88,14 @@ body {
 
 .app-container {
   padding: 30px;
+}
+
+.user-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
 }
 
 .main-title {

@@ -51,3 +51,18 @@ CREATE TABLE IF NOT EXISTS agent_log (
     level       VARCHAR(10)   NOT NULL,   -- INFO / BUY / SELL / WARN
     message     VARCHAR(500)  NOT NULL
 );
+
+-- 로그인 계정. 비밀번호는 BCrypt 해시로만 저장 (원래 비밀번호는 어디에도 남지 않음)
+CREATE TABLE IF NOT EXISTS app_user (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username            VARCHAR(50)  NOT NULL UNIQUE,
+    password_hash       VARCHAR(100) NOT NULL,
+    created_at          BIGINT       NOT NULL,
+    password_changed_at BIGINT                    -- 이 시각 이전에 발급된 토큰은 무효
+);
+
+-- 설정 탭 값 (키 하나에 JSON 한 덩어리)
+CREATE TABLE IF NOT EXISTS app_setting (
+    setting_key   VARCHAR(50)   PRIMARY KEY,
+    setting_value VARCHAR(4000) NOT NULL
+);

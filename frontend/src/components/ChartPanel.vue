@@ -27,7 +27,7 @@
 <script setup>
 // 차트 카드: 기간 버튼 + 캔들 차트 + 실시간(웹소켓)
 // 실시간 리스트 탭과 종목 검색 탭에서 함께 사용한다.
-import { ref, watch, onBeforeUnmount } from 'vue';
+import { ref, watch, onBeforeUnmount, onActivated, onDeactivated } from 'vue';
 import axios from 'axios';
 
 import CoinChart from './CoinChart.vue';
@@ -92,6 +92,14 @@ watch(
 );
 
 onBeforeUnmount(closeSocket);
+
+// 다른 탭으로 가면 실시간 연결을 닫고, 돌아오면 다시 연결 (안 보이는 차트에 체결을 받을 필요 없음)
+onDeactivated(closeSocket);
+onActivated(() => {
+  if (isRealtime.value && props.market && !socket) {
+    startRealtime(props.market);
+  }
+});
 
 // ---------- 기간 변경 ----------
 async function changePeriod(period) {

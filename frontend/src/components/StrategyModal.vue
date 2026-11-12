@@ -91,7 +91,7 @@
 
 <script setup>
 import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue';
-import { createStrategy, backtest } from '../api/backendApi';
+import { createStrategy, backtest, getSettings } from '../api/backendApi';
 import BacktestResult from './BacktestResult.vue';
 import { conditionLabels, formatWon, apiError } from '../utils/format';
 
@@ -172,7 +172,26 @@ const save = async () => {
 const onKey = (e) => {
   if (e.key === 'Escape' && !busy.value) emit('close');
 };
-onMounted(() => window.addEventListener('keydown', onKey));
+onMounted(async () => {
+  window.addEventListener('keydown', onKey);
+  // 설정 탭의 "새 전략 기본값" 으로 채운다 (못 불러오면 위의 값 그대로)
+  try {
+    const d = (await getSettings()).strategyDefaults;
+    if (d) {
+      Object.assign(form, {
+        orderKrw: d.orderKrw,
+        maxPositions: d.maxPositions,
+        takeProfitPct: d.takeProfitPct,
+        stopLossPct: d.stopLossPct,
+        trailingStopPct: d.trailingStopPct,
+        maxHoldHours: d.maxHoldHours,
+        dailyLossLimitKrw: d.dailyLossLimitKrw
+      });
+    }
+  } catch {
+    // 무시
+  }
+});
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 </script>
 
