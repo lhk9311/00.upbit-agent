@@ -94,6 +94,11 @@ public class MarketDataStore {
     }
 
     /** 현재가가 이 시간보다 오래됐으면 매매 판단에 쓰지 않는다 */
+    /** 현재가를 마지막으로 받은 시각 (아직 없으면 null) */
+    public Long tickerUpdatedAt() {
+        return tickerUpdatedAt;
+    }
+
     public boolean pricesFresherThan(long maxAgeMs) {
         return tickerUpdatedAt != null && System.currentTimeMillis() - tickerUpdatedAt <= maxAgeMs;
     }

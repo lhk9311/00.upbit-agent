@@ -19,7 +19,9 @@ public record StrategyRequest(
         Double trailingStopPct,
         Integer maxHoldHours,
         Double dailyLossLimitKrw,
-        Boolean enabled
+        Boolean enabled,
+        String buyFrom,             // 매수 시작 "HH:mm" (한국 시간, 비우면 시간 제한 없음)
+        String buyTo                // 매수 끝 "HH:mm" (포함하지 않음)
 ) {
 
     public static final int MAX_POSITIONS_LIMIT = 10;
@@ -54,6 +56,13 @@ public record StrategyRequest(
         }
         positive(dailyLossLimitKrw, "일일 손실 한도", errors);
 
+        BuyWindow window = null;
+        try {
+            window = BuyWindow.of(buyFrom, buyTo);
+        } catch (IllegalArgumentException e) {
+            errors.add(e.getMessage());
+        }
+
         // 매도 규칙이 하나도 없으면 포지션이 영원히 안 닫힌다
         if (takeProfitPct == null && stopLossPct == null && trailingStopPct == null && maxHoldHours == null) {
             errors.add("매도 규칙(익절·손절·트레일링·최대 보유 시간)을 하나 이상 정해주세요");
@@ -77,7 +86,8 @@ public record StrategyRequest(
                 takeProfitPct, stopLossPct, trailingStopPct, maxHoldHours, dailyLossLimitKrw,
                 TradeMode.PAPER,
                 enabled == null || enabled,
-                createdAt);
+                createdAt,
+                window);
     }
 
     private static void positive(Double v, String label, List<String> errors) {

@@ -212,6 +212,11 @@ const PRESETS = [
     name: '과매도 반등',
     desc: '1시간봉 RSI 35 이하 + 볼린저 하단 터치 후 반등',
     values: { unit: 'MIN60', rsiMax: 35, bbLowerTouchWithin: 3, sortBy: 'RSI_ASC' }
+  },
+  {
+    name: '장 시작 +5%',
+    desc: '오늘 09:00 이후 5% 이상 오른 종목 (업비트 등락률은 매일 09:00 기준). 전략 창에서 매수 시간대 09:00~09:10 과 같이 쓰기',
+    values: { unit: 'MIN15', minChangeRate: 5, sortBy: 'CHANGE_RATE' }
   }
 ];
 

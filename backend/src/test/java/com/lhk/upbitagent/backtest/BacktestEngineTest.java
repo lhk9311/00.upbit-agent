@@ -34,7 +34,7 @@ class BacktestEngineTest {
 
     private static Strategy strategy(int maxPositions, Double tp, Double sl, Integer hold) {
         return new Strategy(1L, "bt", all(ScreenerCondition.SortBy.TRADE_AMOUNT), null, 100_000, maxPositions,
-                tp, sl, null, hold, null, TradeMode.PAPER, true, 0L);
+                tp, sl, null, hold, null, TradeMode.PAPER, true, 0L, null);
     }
 
     /** 같은 가격이 이어지다가 지정한 봉부터 가격이 바뀌는 캔들 */
@@ -131,5 +131,19 @@ class BacktestEngineTest {
         Map<String, List<Candle>> data = Map.of("KRW-BTC", series(100, 100, 90, 110, 100, 110));
         BacktestEngine.Result r = engine.run(strategy(1, null, null, 1000), CandleUnit.MIN60, data, Map.of(), Set.of());
         assertEquals(10.0, r.benchmarkReturnPct(), 1e-9);
+    }
+
+    @Test
+    void 등락률_기준봉은_업비트처럼_UTC_0시() {
+        long m15 = 15 * 60_000L, h = 3_600_000L, day = 24 * h;
+        long utc0 = 20_000 * day; // 어느 날 UTC 0시 = 한국 09:00
+        // 15분봉 09:00~09:15 → 08:45 봉 (09:00 에 끝난 봉) 종가 대비
+        assertEquals(utc0 - m15, BacktestEngine.referenceBarStart(utc0, m15));
+        // 15분봉 08:45~09:00 → 아직 어제 기준 (전날 08:45 봉)
+        assertEquals(utc0 - day - m15, BacktestEngine.referenceBarStart(utc0 - m15, m15));
+        // 1시간봉 10:00~11:00 → 08:00 봉
+        assertEquals(utc0 - h, BacktestEngine.referenceBarStart(utc0 + h, h));
+        // 일봉 → 전날 일봉
+        assertEquals(utc0 - day, BacktestEngine.referenceBarStart(utc0, day));
     }
 }

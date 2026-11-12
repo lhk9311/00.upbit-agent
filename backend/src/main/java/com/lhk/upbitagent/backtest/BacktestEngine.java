@@ -104,6 +104,12 @@ public class BacktestEngine {
         List<Long> times = new ArrayList<>(allTimes);
         int warmup = ScreenerEngine.MIN_CANDLES - 1; // 지표 계산에 필요한 앞부분은 매매하지 않음
         List<String> notes = defaultNotes();
+        if (s.buyWindow() != null) {
+            notes.add(0, s.buyWindow().minutes() * 60_000L < barMs
+                    ? "매수 시간대(" + s.buyWindow().label() + ")가 기준봉(" + unit.label() + ")보다 짧아서, 시간대가 걸친 봉이 끝날 때 산 것으로 근사했어요. "
+                      + "실제로는 시간대 안에서 더 일찍 사므로 결과가 다를 수 있어요."
+                    : "매수 시간대 " + s.buyWindow().label() + "(한국 시간)에 걸친 봉에서만 매수했어요.");
+        }
 
         if (times.size() <= warmup + 1) {
             notes.add(0, "캔들이 부족해요 (" + times.size() + "봉). 지표 계산에 " + ScreenerEngine.MIN_CANDLES
@@ -152,8 +158,11 @@ public class BacktestEngine {
             boolean lossLimitHit = s.dailyLossLimitKrw() != null && today <= -s.dailyLossLimitKrw();
             int slots = s.maxPositions() - open.size();
 
-            if (!lossLimitHit && slots > 0 && s.orderKrw() >= AgentEngine.MIN_ORDER_KRW) {
-                List<MarketSnapshot> snaps = snapshotsAt(barStart, candlesByMarket, indexOf, names,
+            // 매수 시간대: 이 봉 안에 시간대가 조금이라도 걸치면 봉 마감 때 매수 판단 (근사)
+            boolean inWindow = s.buyWindow() == null || s.buyWindow().overlaps(barStart, barClose);
+
+            if (inWindow && !lossLimitHit && slots > 0 && s.orderKrw() >= AgentEngine.MIN_ORDER_KRW) {
+                List<MarketSnapshot> snaps = snapshotsAt(barStart, barMs, candlesByMarket, indexOf, names,
                         warningMarkets, barsPerDay);
                 List<ScreenerResult.Item> candidates = screener.evaluate(snaps, s.condition()).items();
 
@@ -244,9 +253,10 @@ public class BacktestEngine {
 
     /**
      * barStart 봉이 끝난 시점의 종목 스냅샷.
-     * 24시간 거래대금·전일 대비 등락률은 캔들로 근사한다 (업비트 값과 약간 다를 수 있음).
+     * 24시간 거래대금은 최근 24시간 캔들 합으로 근사한다.
+     * 전일 대비 등락률은 업비트처럼 "오늘 09:00(한국 시간, UTC 0시) 직전 종가" 대비로 계산한다.
      */
-    private List<MarketSnapshot> snapshotsAt(long barStart,
+    private List<MarketSnapshot> snapshotsAt(long barStart, long barMs,
                                              Map<String, List<Candle>> candlesByMarket,
                                              Map<String, Map<Long, Integer>> indexOf,
                                              Map<String, String> names,
@@ -265,8 +275,8 @@ public class BacktestEngine {
             for (int j = Math.max(0, i - barsPerDay + 1); j <= i; j++) {
                 amount24h += list.get(j).tradeAmount();
             }
-            int prevIdx = i - barsPerDay;
-            double changeRate = prevIdx >= 0 && list.get(prevIdx).close() > 0
+            Integer prevIdx = indexOf.get(e.getKey()).get(referenceBarStart(barStart, barMs));
+            double changeRate = prevIdx != null && list.get(prevIdx).close() > 0
                     ? (c.close() - list.get(prevIdx).close()) / list.get(prevIdx).close() * 100
                     : 0;
 
@@ -275,6 +285,18 @@ public class BacktestEngine {
                     list.subList(0, i + 1)));
         }
         return out;
+    }
+
+    /**
+     * 등락률 기준이 되는 봉(시작 시각). 업비트는 매일 UTC 0시(한국 09:00) 가격을 "전일 종가"로 쓴다.
+     * 봉이 끝나기 직전 시점 기준으로, 그날 UTC 0시에 끝난 봉 = (UTC 0시 - 봉 길이) 에 시작한 봉.
+     *  - 15분봉 09:00~09:15 → 08:45 봉 종가 대비 (오늘 9시 이후 상승률)
+     *  - 일봉 → 전날 일봉 종가 대비
+     */
+    static long referenceBarStart(long barStart, long barMs) {
+        long decisionAt = barStart + barMs - 1;
+        long utcDayStart = Math.floorDiv(decisionAt, DAY_MS) * DAY_MS;
+        return utcDayStart - barMs;
     }
 
     // ---------- 결과 정리 ----------
@@ -362,7 +384,7 @@ public class BacktestEngine {
         List<String> n = new ArrayList<>();
         n.add("서버가 지금 가진 캔들(종목당 최대 200봉)로 계산해요. 1시간봉이면 약 5일, 일봉이면 약 4개월 구간이에요.");
         n.add("지금 상장된 종목만 대상이에요. 그사이 상장폐지된 종목은 빠져 있어 결과가 실제보다 좋게 나올 수 있어요.");
-        n.add("24시간 거래대금과 전일 대비 등락률은 캔들로 근사했고, 유의 종목 여부는 현재 기준이에요.");
+        n.add("24시간 거래대금은 캔들로 근사했고, 전일 대비 등락률은 업비트처럼 매일 09:00 가격 기준이에요. 유의 종목 여부는 현재 기준이에요.");
         n.add("한 봉 안에서 손절가와 익절가에 모두 닿으면 손절로 처리했어요 (보수적).");
         n.add("과거 결과가 미래 수익을 보장하지 않아요.");
         return n;

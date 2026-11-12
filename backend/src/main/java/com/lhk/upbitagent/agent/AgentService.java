@@ -31,6 +31,8 @@ import java.util.Set;
 @Service
 public class AgentService {
 
+    /** 매수 시간대가 시작되고 이만큼 지난 뒤 받은 현재가로만 매수 (현재가는 10초마다 갱신) */
+    private static final long WINDOW_WARMUP_MS = 20_000;
     private static final Logger log = LoggerFactory.getLogger(AgentService.class);
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
     /** 현재가가 이보다 오래됐으면 매매 판단을 하지 않는다 */
@@ -102,10 +104,24 @@ public class AgentService {
         boolean pausedBySettings = app.buyingPaused() && original.enabled();
         Strategy s = pausedBySettings ? original.withEnabled(false) : original;
 
+        // 매수 시간대가 방금 시작됐으면, 시작 후에 받은 현재가가 올 때까지 매수를 기다린다.
+        // (예: 09:00 직후엔 업비트 등락률이 아직 어제 기준일 수 있음 → 어제 오른 종목을 사는 실수 방지)
+        boolean waitingFreshPrice = false;
+        if (s.enabled() && s.buyWindow() != null) {
+            Long opened = s.buyWindow().openedAt(now);
+            Long tickerAt = market.tickerUpdatedAt();
+            if (opened != null && (tickerAt == null || tickerAt < opened + WINDOW_WARMUP_MS)) {
+                waitingFreshPrice = true;
+                s = s.withEnabled(false); // 이번 주기는 매도만
+            }
+        }
+
         List<Trade> open = trades.findOpenByStrategy(s.id());
         if (!s.enabled() && open.isEmpty()) {
             if (pausedBySettings) {
                 note(s, "설정에서 신규 매수 전체 중단 중");
+            } else if (waitingFreshPrice) {
+                note(s, "매수 시간대 " + s.buyWindow().label() + " 시작 — 새 현재가를 기다리는 중");
             }
             return;
         }
@@ -146,6 +162,9 @@ public class AgentService {
         List<String> notes = new ArrayList<>(d.notes());
         if (pausedBySettings) {
             notes.add(0, "설정에서 신규 매수 전체 중단 중");
+        }
+        if (waitingFreshPrice) {
+            notes.add(0, "매수 시간대 " + s.buyWindow().label() + " 시작 — 새 현재가를 기다리는 중");
         }
         if (!notes.isEmpty()) {
             note(s, String.join(" / ", notes));

@@ -16,8 +16,14 @@ CREATE TABLE IF NOT EXISTS strategy (
     mode                 VARCHAR(10)   NOT NULL,   -- PAPER / LIVE
     enabled              BOOLEAN       NOT NULL,
     deleted              BOOLEAN       NOT NULL DEFAULT FALSE,
-    created_at           BIGINT        NOT NULL
+    created_at           BIGINT        NOT NULL,
+    buy_from             VARCHAR(5),               -- 매수 시간대 시작 HH:mm (한국 시간, NULL = 제한 없음)
+    buy_to               VARCHAR(5)                -- 매수 시간대 끝 HH:mm (포함하지 않음)
 );
+
+-- 이미 만들어진 DB 에 나중에 추가한 칸 (CREATE TABLE IF NOT EXISTS 는 기존 테이블을 바꾸지 않으므로)
+ALTER TABLE strategy ADD COLUMN IF NOT EXISTS buy_from VARCHAR(5);
+ALTER TABLE strategy ADD COLUMN IF NOT EXISTS buy_to VARCHAR(5);
 
 CREATE TABLE IF NOT EXISTS trade (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,

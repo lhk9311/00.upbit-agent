@@ -21,7 +21,7 @@ class AgentEngineTest {
 
     private static Strategy strategy(int maxPositions, Double tp, Double sl, Double trail, Integer hold, Double dailyLimit) {
         return new Strategy(1L, "테스트", null, null, 100_000, maxPositions, tp, sl, trail, hold, dailyLimit,
-                TradeMode.PAPER, true, 0L);
+                TradeMode.PAPER, true, 0L, null);
     }
 
     private static Trade open(long id, String market, double buyPrice, double highest, long buyAt) {
@@ -140,7 +140,7 @@ class AgentEngineTest {
     void 정지된_전략은_매도만() {
         Strategy on = strategy(3, 5.0, null, null, null, null);
         Strategy off = new Strategy(1L, "x", null, null, 100_000, 3, 5.0, null, null, null, null,
-                TradeMode.PAPER, false, 0L);
+                TradeMode.PAPER, false, 0L, null);
         var d = engine.decide(off, List.of(open(1, "KRW-A", 100, 100, NOW)), Map.of("KRW-A", 106.0),
                 List.of(item("KRW-B", 100)), 0, Set.of(), NOW);
         assertEquals(1, d.sells().size());

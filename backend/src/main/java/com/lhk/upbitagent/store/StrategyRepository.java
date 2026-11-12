@@ -2,6 +2,7 @@ package com.lhk.upbitagent.store;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lhk.upbitagent.agent.BuyWindow;
 import com.lhk.upbitagent.agent.Strategy;
 import com.lhk.upbitagent.agent.TradeMode;
 import com.lhk.upbitagent.screener.ScreenerCondition;
@@ -41,9 +42,11 @@ public class StrategyRepository {
         KeyHolder key = new GeneratedKeyHolder();
         jdbc.update("""
                 INSERT INTO strategy (name, condition_json, natural_text, order_krw, max_positions, take_profit_pct, stop_loss_pct,
-                                      trailing_stop_pct, max_hold_hours, daily_loss_limit_krw, mode, enabled, created_at)
+                                      trailing_stop_pct, max_hold_hours, daily_loss_limit_krw, mode, enabled, created_at,
+                                      buy_from, buy_to)
                 VALUES (:name, :conditionJson, :naturalText, :orderKrw, :maxPositions, :takeProfitPct, :stopLossPct,
-                        :trailingStopPct, :maxHoldHours, :dailyLossLimitKrw, :mode, :enabled, :createdAt)
+                        :trailingStopPct, :maxHoldHours, :dailyLossLimitKrw, :mode, :enabled, :createdAt,
+                        :buyFrom, :buyTo)
                 """, params(s), key, new String[]{"id"});
         return findById(key.getKey().longValue()).orElseThrow();
     }
@@ -54,7 +57,8 @@ public class StrategyRepository {
                    SET name = :name, condition_json = :conditionJson, natural_text = :naturalText, order_krw = :orderKrw,
                        max_positions = :maxPositions, take_profit_pct = :takeProfitPct, stop_loss_pct = :stopLossPct,
                        trailing_stop_pct = :trailingStopPct, max_hold_hours = :maxHoldHours,
-                       daily_loss_limit_krw = :dailyLossLimitKrw, mode = :mode, enabled = :enabled
+                       daily_loss_limit_krw = :dailyLossLimitKrw, mode = :mode, enabled = :enabled,
+                       buy_from = :buyFrom, buy_to = :buyTo
                  WHERE id = :id
                 """, params(s).addValue("id", s.id()));
     }
@@ -84,7 +88,9 @@ public class StrategyRepository {
                 .addValue("dailyLossLimitKrw", s.dailyLossLimitKrw())
                 .addValue("mode", s.mode().name())
                 .addValue("enabled", s.enabled())
-                .addValue("createdAt", s.createdAt());
+                .addValue("createdAt", s.createdAt())
+                .addValue("buyFrom", s.buyWindow() == null ? null : s.buyWindow().from())
+                .addValue("buyTo", s.buyWindow() == null ? null : s.buyWindow().to());
     }
 
     private RowMapper<Strategy> mapper() {
@@ -102,7 +108,8 @@ public class StrategyRepository {
                 nullableDouble(rs, "daily_loss_limit_krw"),
                 TradeMode.valueOf(rs.getString("mode")),
                 rs.getBoolean("enabled"),
-                rs.getLong("created_at"));
+                rs.getLong("created_at"),
+                BuyWindow.of(rs.getString("buy_from"), rs.getString("buy_to")));
     }
 
     private String toJson(ScreenerCondition c) {

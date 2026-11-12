@@ -75,6 +75,8 @@ export const conditionLabels = (c) => {
 // 매도 규칙 요약
 export const ruleLabels = (s) => {
   const out = [];
+  const w = s.buyWindow ?? (s.buyFrom && s.buyTo ? { from: s.buyFrom, to: s.buyTo } : null);
+  if (w) out.push(`매수 ${w.from}~${w.to}`);
   if (s.takeProfitPct != null) out.push(`익절 +${s.takeProfitPct}%`);
   if (s.stopLossPct != null) out.push(`손절 -${s.stopLossPct}%`);
   if (s.trailingStopPct != null) out.push(`트레일링 -${s.trailingStopPct}%`);

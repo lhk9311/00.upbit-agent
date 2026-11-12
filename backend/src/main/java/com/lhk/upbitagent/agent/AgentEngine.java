@@ -99,6 +99,9 @@ public class AgentEngine {
         if (!strategy.enabled()) {
             return new Decision(sells, buys, highs, notes); // 정지된 전략은 매도만
         }
+        if (strategy.buyWindow() != null && !strategy.buyWindow().contains(now)) {
+            return new Decision(sells, buys, highs, notes); // 매수 시간대 밖 → 매도만 (매분 기록이 쌓이지 않게 메모 없음)
+        }
         if (candidates == null) {
             notes.add("시세 데이터 수집 중이라 매수 판단을 건너뜀");
             return new Decision(sells, buys, highs, notes);

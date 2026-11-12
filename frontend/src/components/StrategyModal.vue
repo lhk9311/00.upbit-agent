@@ -33,6 +33,29 @@
         </label>
       </div>
 
+      <div class="section-title mt-3">
+        매수 시간대 <small>(한국 시간, 비우면 언제든 매수 · 매도는 시간과 상관없이)</small>
+      </div>
+      <div class="row g-2 align-items-end">
+        <label class="col-4 field">
+          <span>시작</span>
+          <input v-model="form.buyFrom" type="time" />
+        </label>
+        <label class="col-4 field">
+          <span>끝 (이 시각 전까지)</span>
+          <input v-model="form.buyTo" type="time" />
+        </label>
+        <div class="col-4 field">
+          <button type="button" class="btn btn-sm btn-outline-secondary w-100" @click="presetOpening">
+            장 시작 단타 (09:00~09:10)
+          </button>
+        </div>
+      </div>
+      <p v-if="form.buyFrom === '09:00'" class="hint">
+        업비트 "전일 대비" 등락률은 매일 09:00 에 0 에서 다시 시작해요.
+        09:00 직후 "+5% 이상" = 장 시작 몇 분 만에 5% 넘게 오른 종목이에요.
+      </p>
+
       <div class="section-title mt-3">매도 규칙 <small>(먼저 걸리는 것으로 매도, 하나 이상 필요)</small></div>
       <div class="row g-2">
         <label class="col-6 field">
@@ -110,8 +133,19 @@ const form = reactive({
   stopLossPct: 3,
   trailingStopPct: null,
   maxHoldHours: 24,
-  dailyLossLimitKrw: 30000
+  dailyLossLimitKrw: 30000,
+  buyFrom: '',
+  buyTo: ''
 });
+
+// 장 시작 단타: 09:00~09:10 에만 사고, +8% 익절 / -3% 손절 / 그날 안에 정리
+const presetOpening = () => {
+  form.buyFrom = '09:00';
+  form.buyTo = '09:10';
+  form.takeProfitPct = 8;
+  form.stopLossPct = 3;
+  form.maxHoldHours = 12;
+};
 
 const saving = ref(false);
 const testing = ref(false);
@@ -138,7 +172,9 @@ const toRequest = () => ({
   trailingStopPct: num(form.trailingStopPct),
   maxHoldHours: num(form.maxHoldHours),
   dailyLossLimitKrw: num(form.dailyLossLimitKrw),
-  enabled: true
+  enabled: true,
+  buyFrom: form.buyFrom || null,
+  buyTo: form.buyTo || null
 });
 
 // 저장하기 전에 같은 설정으로 과거 데이터에서 돌려보기
@@ -285,6 +321,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 .calc {
   padding: 6px 0;
   font-variant-numeric: tabular-nums;
+}
+
+.hint {
+  color: #8b949e;
+  font-size: 0.78rem;
+  margin: 6px 0 0;
 }
 
 .bt-box {

@@ -24,13 +24,15 @@ public record Strategy(
 
         TradeMode mode,
         boolean enabled,
-        Long createdAt
+        Long createdAt,
+
+        BuyWindow buyWindow         // 매수 시간대 (한국 시간). null 이면 언제든 매수
 ) {
 
     /** enabled 만 바꾼 복사본 (record 는 값을 못 바꾸므로 새로 만든다) */
     public Strategy withEnabled(boolean value) {
         return new Strategy(id, name, condition, naturalText, orderKrw, maxPositions,
                 takeProfitPct, stopLossPct, trailingStopPct, maxHoldHours, dailyLossLimitKrw,
-                mode, value, createdAt);
+                mode, value, createdAt, buyWindow);
     }
 }
